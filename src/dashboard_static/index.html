@@ -452,7 +452,7 @@
         <dt>Type</dt>   <dd>${typeBadge(thought.thought_type)}</dd>
         <dt>Role</dt>   <dd>${thought.role ? `<span class="badge badge-gray">${esc(thought.role)}</span>` : '<span style="color:#484f58">—</span>'}</dd>
         <dt>Agent</dt>  <dd class="mono" style="font-size:0.82rem">${esc(thought.agent_id || '—')}</dd>
-        <dt>Created</dt><dd>${esc(fmtDate(thought.created_at))}</dd>
+        <dt>Created</dt><dd>${esc(fmtDate(thought.timestamp||thought.created_at))}</dd>
         <dt>Tags</dt>   <dd>${tags     || '<span style="color:#484f58">none</span>'}</dd>
         <dt>Concepts</dt><dd>${concepts || '<span style="color:#484f58">none</span>'}</dd>
         <dt>Refs</dt>   <dd>${refs     || '<span style="color:#484f58">none</span>'}</dd>
@@ -703,7 +703,7 @@
                   <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
                     ${esc((t.content || '').slice(0,100))}${(t.content||'').length>100?'…':''}
                   </td>
-                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.created_at))}</td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -821,8 +821,8 @@
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid #30363d">
             <div class="section-label">Info</div>
-            <div class="kv"><span class="kv-k">Created</span><span class="kv-v">${esc(fmtDate(agent.created_at))}</span></div>
-            <div class="kv"><span class="kv-k">Updated</span><span class="kv-v">${esc(fmtDate(agent.updated_at))}</span></div>
+            <div class="kv"><span class="kv-k">First seen</span><span class="kv-v">${esc(fmtDate(agent.first_seen_at||agent.created_at))}</span></div>
+            <div class="kv"><span class="kv-k">Last seen</span><span class="kv-v">${esc(fmtDate(agent.last_seen_at||agent.updated_at))}</span></div>
             ${(agent.aliases||[]).length ? `
               <div class="kv"><span class="kv-k">Aliases</span><span class="kv-v">${(agent.aliases||[]).map(a=>`<span class="badge badge-gray">${esc(a)}</span>`).join(' ')}</span></div>
             ` : ''}
@@ -958,7 +958,7 @@
                   <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
                     ${esc((t.content||'').slice(0,100))}${(t.content||'').length>100?'…':''}
                   </td>
-                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.created_at))}</td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
                 </tr>
               `).join('')}
             </tbody>
