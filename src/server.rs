@@ -387,14 +387,7 @@ pub fn default_mentisdb_dir() -> PathBuf {
 /// The default is `$HOME/.mentisdb/tls` when `HOME` is available,
 /// otherwise `./.mentisdb/tls`.
 fn default_tls_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".mentisdb").join("tls")
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".mentisdb")
-            .join("tls")
-    }
+    default_mentisdb_dir().join("tls")
 }
 
 /// Report returned when legacy default MentisDB storage is adopted into the
