@@ -17,9 +17,9 @@
 //! If neither is present the request is redirected to `/dashboard/login`.
 
 use crate::{
-    deregister_chain, load_registered_chains, AgentStatus, MentisDb,
-    PublicKeyAlgorithm, SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtRole, ThoughtType,
+    deregister_chain, load_registered_chains, AgentStatus, MentisDb, PublicKeyAlgorithm,
+    SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput, ThoughtRole,
+    ThoughtType,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -621,10 +621,8 @@ async fn api_agents_all(
                     .agents
                     .values()
                     .map(|a| {
-                        let live_count = thoughts
-                            .iter()
-                            .filter(|t| t.agent_id == a.agent_id)
-                            .count() as u64;
+                        let live_count =
+                            thoughts.iter().filter(|t| t.agent_id == a.agent_id).count() as u64;
                         let mut v = serde_json::to_value(a).unwrap_or(Value::Null);
                         if let Value::Object(ref mut m) = v {
                             m.insert("thought_count".to_string(), live_count.into());
@@ -658,10 +656,7 @@ async fn api_agents_by_chain(
         .agents
         .values()
         .map(|a| {
-            let live_count = thoughts
-                .iter()
-                .filter(|t| t.agent_id == a.agent_id)
-                .count() as u64;
+            let live_count = thoughts.iter().filter(|t| t.agent_id == a.agent_id).count() as u64;
             let mut v = serde_json::to_value(a).unwrap_or(Value::Null);
             if let Value::Object(ref mut m) = v {
                 m.insert("thought_count".to_string(), live_count.into());
@@ -690,7 +685,16 @@ async fn api_get_agent(
                 "agent '{agent_id}' not found in chain '{chain_key}'"
             ))
         })?;
-    Ok(Json(serde_json::to_value(agent).map_err(internal_error)?))
+    let live_count = chain
+        .thoughts()
+        .iter()
+        .filter(|t| t.agent_id == agent_id)
+        .count() as u64;
+    let mut v = serde_json::to_value(agent).map_err(internal_error)?;
+    if let Value::Object(ref mut m) = v {
+        m.insert("thought_count".to_string(), live_count.into());
+    }
+    Ok(Json(v))
 }
 
 // ── Agent mutation helpers ────────────────────────────────────────────────────
