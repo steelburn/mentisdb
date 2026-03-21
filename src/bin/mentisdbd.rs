@@ -502,9 +502,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("  REST (TLS)   {local:<32}  {YELLOW}{friendly}{RESET}");
     }
     if let Some(ref h) = handles.dashboard {
-        let local = format!("http://{}/dashboard", h.local_addr());
+        let local = format!("https://{}/dashboard", h.local_addr());
         let port = h.local_addr().port();
-        let friendly = format!("http://my.mentisdb.com:{port}/dashboard");
+        let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
         println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
     }
 

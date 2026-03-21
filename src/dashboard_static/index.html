@@ -506,6 +506,7 @@
     const parts = hash.split('/');
     if      (parts[0] === 'chains' && parts[1])              renderExplorer(decodeURIComponent(parts[1]));
     else if (parts[0] === 'chains')                          renderChainList();
+    else if (parts[0] === 'agent-thoughts' && parts[1] && parts[2]) renderAgentThoughts(decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
     else if (parts[0] === 'agents' && parts[1] && parts[2]) renderAgentDetail(decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
     else if (parts[0] === 'agents')                          renderAgentList();
     else if (parts[0] === 'skills' && parts[1])              renderSkillDetail(decodeURIComponent(parts[1]));
@@ -521,17 +522,115 @@
   function renderChainList() {
     const app = document.getElementById('app');
     app.innerHTML = `
-      <div class="page-header"><h1>Memory Chains</h1></div>
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <h1>Memory Chains</h1>
+        <button class="btn btn-primary" id="cl-bootstrap-btn">＋ Bootstrap New Chain</button>
+      </div>
+
+      <!-- Bootstrap modal -->
+      <div id="cl-bootstrap-modal" style="display:none">
+        <div class="card" style="border-color:#388bfd;margin-bottom:16px">
+          <div class="card-title">Bootstrap New Chain</div>
+          <div class="form-group"><label>Chain Key <span style="color:#f85149">*</span></label><input type="text" id="cl-ck" placeholder="e.g. my-project-brain"></div>
+          <div class="form-group"><label>Initial Memory Content <span style="color:#f85149">*</span></label><textarea id="cl-content" placeholder="Describe what this chain is for..."></textarea></div>
+          <div class="form-group"><label>Agent ID <span style="color:#8b949e;font-weight:400">(optional)</span></label><input type="text" id="cl-agent" placeholder="system"></div>
+          <div class="form-group"><label>Tags <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-tags" placeholder="project, memory"></div>
+          <div class="form-group"><label>Concepts <span style="color:#8b949e;font-weight:400">(comma-separated, optional)</span></label><input type="text" id="cl-concepts" placeholder="context, bootstrap"></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="cl-bootstrap-submit">Bootstrap</button>
+            <button class="btn btn-secondary btn-sm" id="cl-bootstrap-cancel">Cancel</button>
+            <span id="cl-bootstrap-fb" class="feedback"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delete confirmation modal -->
+      <div id="cl-delete-modal" style="display:none">
+        <div class="card" style="border-color:#f85149;margin-bottom:16px">
+          <div class="card-title" style="color:#f85149">⚠ Delete Chain</div>
+          <p style="color:#c9d1d9;margin-bottom:14px">You are about to permanently delete chain <strong id="cl-del-name" style="color:#f85149"></strong>. All memories stored in this chain will be lost forever and cannot be recovered.</p>
+          <div class="form-group"><label>Type the chain key to confirm deletion</label><input type="text" id="cl-del-confirm" placeholder=""></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-danger btn-sm" id="cl-del-submit" disabled>Delete Forever</button>
+            <button class="btn btn-secondary btn-sm" id="cl-del-cancel">Cancel</button>
+            <span id="cl-del-fb" class="feedback"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="card"><div id="cl-body"></div></div>
     `;
+
+    // Bootstrap modal wiring
+    let _delChainKey = null;
+    document.getElementById('cl-bootstrap-btn').addEventListener('click', () => {
+      document.getElementById('cl-bootstrap-modal').style.display = '';
+      document.getElementById('cl-ck').focus();
+    });
+    document.getElementById('cl-bootstrap-cancel').addEventListener('click', () => {
+      document.getElementById('cl-bootstrap-modal').style.display = 'none';
+    });
+    document.getElementById('cl-bootstrap-submit').addEventListener('click', () => {
+      const fb  = document.getElementById('cl-bootstrap-fb');
+      const btn = document.getElementById('cl-bootstrap-submit');
+      const ck  = document.getElementById('cl-ck').value.trim();
+      const content = document.getElementById('cl-content').value.trim();
+      if (!ck || !content) { showFeedback(fb, false, 'Chain key and content are required'); return; }
+      const tags     = document.getElementById('cl-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+      const concepts = document.getElementById('cl-concepts').value.split(',').map(s=>s.trim()).filter(Boolean);
+      const agentRaw = document.getElementById('cl-agent').value.trim();
+      btn.disabled = true;
+      api('/dashboard/api/chains', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ chain_key: ck, content, tags, concepts, agent_id: agentRaw || undefined })
+      })
+      .then(r => {
+        showFeedback(fb, true, r.bootstrapped ? `Chain "${ck}" created!` : `Chain "${ck}" already exists`);
+        setTimeout(() => { document.getElementById('cl-bootstrap-modal').style.display = 'none'; renderChainList(); }, 1200);
+      })
+      .catch(err => showFeedback(fb, false, err.message))
+      .finally(() => { btn.disabled = false; });
+    });
+
+    // Delete modal wiring
+    document.getElementById('cl-del-cancel').addEventListener('click', () => {
+      document.getElementById('cl-delete-modal').style.display = 'none';
+      _delChainKey = null;
+    });
+    document.getElementById('cl-del-confirm').addEventListener('input', function() {
+      document.getElementById('cl-del-submit').disabled = this.value !== _delChainKey;
+    });
+    document.getElementById('cl-del-submit').addEventListener('click', () => {
+      if (!_delChainKey) return;
+      const fb  = document.getElementById('cl-del-fb');
+      const btn = document.getElementById('cl-del-submit');
+      btn.disabled = true;
+      api(`/dashboard/api/chains/${encodeURIComponent(_delChainKey)}`, { method: 'DELETE' })
+        .then(() => {
+          showFeedback(fb, true, 'Chain deleted');
+          setTimeout(() => { document.getElementById('cl-delete-modal').style.display = 'none'; renderChainList(); }, 800);
+        })
+        .catch(err => { showFeedback(fb, false, err.message); btn.disabled = false; });
+    });
+
+    window._openDeleteChain = function(ck) {
+      _delChainKey = ck;
+      document.getElementById('cl-del-name').textContent = ck;
+      document.getElementById('cl-del-confirm').value = '';
+      document.getElementById('cl-del-submit').disabled = true;
+      document.getElementById('cl-delete-modal').style.display = '';
+      document.getElementById('cl-del-confirm').focus();
+    };
+
     const el = document.getElementById('cl-body');
     spinner(el);
     api('/dashboard/api/chains')
       .then(chains => {
-        if (!chains || !chains.length) { el.innerHTML = '<div class="empty-state">No chains found.</div>'; return; }
+        if (!chains || !chains.length) { el.innerHTML = '<div class="empty-state">No chains found. Bootstrap one above!</div>'; return; }
         el.innerHTML = `
           <div class="table-wrap"><table>
-            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th></tr></thead>
+            <thead><tr><th>Chain Key</th><th>Thoughts</th><th>Agents</th><th>Head Hash</th><th></th></tr></thead>
             <tbody>
               ${chains.map(c => `
                 <tr class="clickable" onclick="location.hash='chains/${encodeURIComponent(c.chain_key)}'">
@@ -539,6 +638,7 @@
                   <td>${esc(String(c.thought_count ?? '—'))}</td>
                   <td>${esc(String(c.agent_count  ?? '—'))}</td>
                   <td class="mono" style="color:#8b949e">${c.head_hash ? esc(c.head_hash.slice(0,8)) : '—'}</td>
+                  <td onclick="event.stopPropagation()"><button class="btn btn-danger btn-sm" onclick="window._openDeleteChain('${esc(c.chain_key)}')">Delete</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -890,7 +990,11 @@
 
       <!-- BOTTOM: Recent Thoughts -->
       <div class="card" style="margin-top:0">
-        <div class="card-title">Recent Thoughts</div>
+        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span>Recent Thoughts</span>
+          <a class="btn btn-secondary btn-sm" href="#agent-thoughts/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}">All ${esc(agent.display_name || agentId)}'s thoughts on ${esc(chainKey)} →</a>
+        </div>
+        <div id="ad-thoughts-chains" style="margin-bottom:10px"></div>
         <div id="ad-thoughts"><div class="spinner-wrap"><div class="spinner"></div></div></div>
       </div>
     `;
@@ -976,6 +1080,24 @@
 
     wireKeyDelete(chainKey, agentId);
 
+    // Cross-chain links: find all chains where this agent appears
+    const displayName = agent.display_name || agentId;
+    api('/dashboard/api/agents')
+      .then(allByChain => {
+        const chainsEl = document.getElementById('ad-thoughts-chains');
+        if (!chainsEl) return;
+        const chains = Object.entries(allByChain)
+          .filter(([ck, agents]) => agents.some(a => a.agent_id === agentId || a.id === agentId));
+        if (chains.length <= 1) return; // only show if more than the current chain
+        chainsEl.innerHTML = chains.map(([ck]) =>
+          `<a class="btn btn-secondary btn-sm" style="margin-right:6px;margin-bottom:4px"
+              href="#agent-thoughts/${encodeURIComponent(ck)}/${encodeURIComponent(agentId)}">
+            ${esc(displayName)}'s thoughts on ${esc(ck)} →
+          </a>`
+        ).join('');
+      })
+      .catch(() => {});
+
     // Recent thoughts
     api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/agents/${encodeURIComponent(agentId)}/thoughts?per_page=10&page=1`)
       .then(data => {
@@ -1008,6 +1130,100 @@
         const tEl = document.getElementById('ad-thoughts');
         if (tEl) errBox(tEl, err.message);
       });
+  }
+
+  async function renderAgentThoughts(chainKey, agentId) {
+    setActive('agents');
+    const main = document.getElementById('main');
+    main.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
+    let agent = null;
+    try {
+      agent = await api(`/dashboard/api/agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}`);
+    } catch (_) {}
+    const displayName = (agent && (agent.display_name || agent.id)) || agentId;
+
+    let page = 1, perPage = 50, order = 'desc';
+    let total = 0;
+
+    async function load() {
+      main.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
+      let data;
+      try {
+        data = await api(`/dashboard/api/chains/${encodeURIComponent(chainKey)}/agents/${encodeURIComponent(agentId)}/thoughts?page=${page}&per_page=${perPage}&order=${order}`);
+      } catch (err) {
+        main.innerHTML = `<div class="error-box">Error: ${esc(err.message)}</div>`; return;
+      }
+      const thoughts = data.thoughts || [];
+      total = data.total || 0;
+      const pages = data.pages || Math.max(1, Math.ceil(total / perPage));
+
+      main.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+          <a href="#agents/${encodeURIComponent(chainKey)}/${encodeURIComponent(agentId)}"
+             style="color:#58a6ff;text-decoration:none;font-size:0.9rem">← Back to ${esc(displayName)}</a>
+        </div>
+        <div class="page-title">${esc(displayName)}'s thoughts on <span style="color:#58a6ff">${esc(chainKey)}</span></div>
+        <div style="color:#8b949e;font-size:0.88rem;margin-bottom:16px">${total} total thought${total !== 1 ? 's' : ''}</div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+            <label style="color:#8b949e;font-size:0.85rem">Per page:</label>
+            <select id="at-perpage" class="filter-select">
+              ${[25,50,100].map(n => `<option value="${n}" ${n===perPage?'selected':''}>${n}</option>`).join('')}
+            </select>
+            <label style="color:#8b949e;font-size:0.85rem">Order:</label>
+            <select id="at-order" class="filter-select">
+              <option value="desc" ${order==='desc'?'selected':''}>Newest first</option>
+              <option value="asc"  ${order==='asc'?'selected':''}>Oldest first</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" id="at-genesis" title="Jump to genesis">⏮ Genesis</button>
+            <button class="btn btn-secondary btn-sm" id="at-head"    title="Jump to head">Head ⏭</button>
+          </div>
+
+          ${thoughts.length ? `
+          <div class="table-wrap"><table>
+            <thead><tr><th>#</th><th>Type</th><th>Role</th><th>Content</th><th>Date</th></tr></thead>
+            <tbody>
+              ${thoughts.map((t,i) => `
+                <tr class="clickable" data-tidx="${i}">
+                  <td class="mono" style="color:#8b949e;font-size:0.81rem">${esc(String(t.index ?? ''))}</td>
+                  <td>${typeBadge(t.thought_type)}</td>
+                  <td><span class="badge badge-gray">${esc(t.role||'')}</span></td>
+                  <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9">
+                    ${esc((t.content||'').slice(0,120))}${(t.content||'').length>120?'…':''}
+                  </td>
+                  <td style="white-space:nowrap;color:#8b949e;font-size:0.81rem">${esc(fmtDate(t.timestamp||t.created_at))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:8px">
+            <div style="color:#8b949e;font-size:0.85rem">Page ${page} / ${pages}</div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-secondary btn-sm" id="at-prev" ${page<=1?'disabled':''}>← Prev</button>
+              <button class="btn btn-secondary btn-sm" id="at-next" ${page>=pages?'disabled':''}>Next →</button>
+            </div>
+          </div>
+          ` : '<div class="empty-state">No thoughts found.</div>'}
+        </div>
+      `;
+
+      // controls
+      document.getElementById('at-perpage').addEventListener('change', e => { perPage = +e.target.value; page = 1; load(); });
+      document.getElementById('at-order').addEventListener('change', e => { order = e.target.value; page = 1; load(); });
+      document.getElementById('at-genesis')?.addEventListener('click', () => { order = 'asc'; page = 1; load(); });
+      document.getElementById('at-head')?.addEventListener('click', () => { order = 'desc'; page = 1; load(); });
+      document.getElementById('at-prev')?.addEventListener('click', () => { if (page > 1) { page--; load(); } });
+      document.getElementById('at-next')?.addEventListener('click', () => { if (page < pages) { page++; load(); } });
+
+      // row click → modal
+      main.querySelectorAll('tbody tr').forEach((row, i) => {
+        row.addEventListener('click', () => openModal(thoughts[i]));
+      });
+    }
+
+    load();
   }
 
   function buildKeysTable(keys) {

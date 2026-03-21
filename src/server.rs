@@ -651,8 +651,11 @@ pub async fn start_servers(
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
     use crate::dashboard::DashboardState;
 
-    // Ensure TLS cert exists before starting HTTPS servers
-    if config.https_mcp_addr.is_some() || config.https_rest_addr.is_some() {
+    // Ensure TLS cert exists before starting HTTPS servers and the dashboard
+    if config.https_mcp_addr.is_some()
+        || config.https_rest_addr.is_some()
+        || config.dashboard_addr.is_some()
+    {
         ensure_tls_cert(&config.tls_cert_path, &config.tls_key_path)?;
     }
 
@@ -704,7 +707,15 @@ pub async fn start_servers(
             default_storage_adapter: config.service.default_storage_adapter,
             auto_flush: config.service.auto_flush,
         };
-        Some(start_dashboard_server(addr, dashboard_state).await?)
+        Some(
+            start_dashboard_server(
+                addr,
+                dashboard_state,
+                config.tls_cert_path.clone(),
+                config.tls_key_path.clone(),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -718,16 +729,21 @@ pub async fn start_servers(
     })
 }
 
-/// Bind a TCP socket and serve the dashboard router.
+/// Bind a TCP socket and serve the dashboard router over HTTPS/TLS.
+///
+/// The dashboard is served exclusively over TLS so browsers do not show
+/// insecure-connection warnings when accessing it.
 ///
 /// Returns a [`ServerHandle`] that can be used to query the bound address or
 /// shut the server down gracefully.
 pub(crate) async fn start_dashboard_server(
     addr: SocketAddr,
     state: crate::dashboard::DashboardState,
+    cert_path: PathBuf,
+    key_path: PathBuf,
 ) -> Result<ServerHandle, Box<dyn Error + Send + Sync>> {
     use crate::dashboard::dashboard_router;
-    start_router(addr, dashboard_router(state)).await
+    start_tls_router(addr, dashboard_router(state), cert_path, key_path).await
 }
 
 /// Build the REST router pre-wired to an existing [`MentisDbService`] arc.

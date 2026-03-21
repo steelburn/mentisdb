@@ -3377,6 +3377,23 @@ pub fn load_registered_chains<P: AsRef<Path>>(chain_dir: P) -> io::Result<Mentis
     load_mentisdb_registry(chain_dir.as_ref())
 }
 
+/// Remove a chain from the registry and delete its storage file from disk.
+///
+/// If the chain is not registered this is a no-op. The in-memory cache held by
+/// a running daemon must be purged separately by the caller.
+pub fn deregister_chain<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> io::Result<()> {
+    let chain_dir = chain_dir.as_ref();
+    let mut registry = load_mentisdb_registry(chain_dir)?;
+    if let Some(entry) = registry.chains.remove(chain_key) {
+        save_mentisdb_registry(chain_dir, &registry)?;
+        let storage_path = PathBuf::from(&entry.storage_location);
+        if storage_path.exists() {
+            fs::remove_file(&storage_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Refresh stale `thought_count` and `agent_count` values in the on-disk registry
 /// by opening each registered chain and reading live counts.
 ///

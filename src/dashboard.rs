@@ -17,8 +17,9 @@
 //! If neither is present the request is redirected to `/dashboard/login`.
 
 use crate::{
-    load_registered_chains, AgentRecord, AgentStatus, MentisDb, PublicKeyAlgorithm, SkillFormat,
-    SkillRegistry, StorageAdapterKind, Thought, ThoughtType,
+    deregister_chain, load_registered_chains, AgentRecord, AgentStatus, MentisDb,
+    PublicKeyAlgorithm, SkillFormat, SkillRegistry, StorageAdapterKind, Thought, ThoughtInput,
+    ThoughtRole, ThoughtType,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -83,6 +84,8 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
     let api = Router::new()
         // Chain listing
         .route("/chains", get(api_chains))
+        .route("/chains", post(api_bootstrap_chain))
+        .route("/chains/{chain_key}", delete(api_delete_chain))
         // Thoughts for a chain
         .route("/chains/{chain_key}/thoughts", get(api_chain_thoughts))
         // Single thought lookup
@@ -424,6 +427,68 @@ async fn api_chains(
     }
 
     Ok(Json(json!(chains)))
+}
+
+// ── API: bootstrap chain ──────────────────────────────────────────────────────
+
+/// JSON body for `POST /dashboard/api/chains`.
+#[derive(Deserialize)]
+struct BootstrapChainBody {
+    chain_key: String,
+    content: String,
+    agent_id: Option<String>,
+    tags: Option<Vec<String>>,
+    concepts: Option<Vec<String>>,
+    importance: Option<f32>,
+}
+
+/// `POST /dashboard/api/chains`
+///
+/// Bootstraps a new chain (creates it and appends a bootstrap thought if it
+/// is empty). Returns `{"bootstrapped": true/false, "chain_key": "..."}`.
+async fn api_bootstrap_chain(
+    State(state): State<DashboardState>,
+    Json(body): Json<BootstrapChainBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let chain_key = body.chain_key.trim().to_string();
+    if chain_key.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "chain_key must not be empty"})),
+        ));
+    }
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let mut chain = arc.write().await;
+    let bootstrapped = if chain.thoughts().is_empty() {
+        let agent_id = body.agent_id.as_deref().unwrap_or("system");
+        let input = ThoughtInput::new(ThoughtType::Summary, body.content.clone())
+            .with_role(ThoughtRole::Checkpoint)
+            .with_importance(body.importance.unwrap_or(1.0))
+            .with_tags(body.tags.clone().unwrap_or_default())
+            .with_concepts(body.concepts.clone().unwrap_or_default());
+        chain.append_thought(agent_id, input).map_err(internal_error)?;
+        true
+    } else {
+        false
+    };
+    Ok(Json(json!({ "bootstrapped": bootstrapped, "chain_key": chain_key })))
+}
+
+// ── API: delete chain ─────────────────────────────────────────────────────────
+
+/// `DELETE /dashboard/api/chains/:chain_key`
+///
+/// Permanently deletes a chain: removes its storage file, deregisters it from
+/// the registry, and evicts it from the in-memory cache.
+async fn api_delete_chain(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Evict from in-memory cache first so no new writes can sneak in.
+    state.chains.remove(&chain_key);
+    // Deregister + delete storage file.
+    deregister_chain(&state.mentisdb_dir, &chain_key).map_err(internal_error)?;
+    Ok(Json(json!({ "deleted": true, "chain_key": chain_key })))
 }
 
 // ── API: thoughts ─────────────────────────────────────────────────────────────
