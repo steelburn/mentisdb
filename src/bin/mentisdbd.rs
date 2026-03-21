@@ -154,80 +154,52 @@ fn thought_sound_sequence(tt: ThoughtType) -> &'static [(f32, u64)] {
     // C5=523  D5=587  E5=659  F5=698  G5=783  A5=880  B5=987  C6=1046
     match tt {
         // ── Surprise: MGS "!" rapid ascending arpeggio ────────────────────────
-        ThoughtType::Surprise =>
-            &[(523.25, 35), (659.25, 35), (783.99, 35), (1046.50, 95)],
+        ThoughtType::Surprise => &[(523.25, 35), (659.25, 35), (783.99, 35), (1046.50, 95)],
 
         // ── Mistakes & corrections ────────────────────────────────────────────
-        ThoughtType::Mistake =>
-            &[(783.99, 80), (523.25, 100)],                 // high → low, oops
-        ThoughtType::Correction =>
-            &[(293.66, 50), (523.25, 50), (659.25, 80)],   // resolve upward
-        ThoughtType::AssumptionInvalidated =>
-            &[(783.99, 80), (523.25, 60)],                  // deflate
+        ThoughtType::Mistake => &[(783.99, 80), (523.25, 100)], // high → low, oops
+        ThoughtType::Correction => &[(293.66, 50), (523.25, 50), (659.25, 80)], // resolve upward
+        ThoughtType::AssumptionInvalidated => &[(783.99, 80), (523.25, 60)], // deflate
 
         // ── Discovery & learning ──────────────────────────────────────────────
-        ThoughtType::Insight =>
-            &[(659.25, 80), (987.77, 100)],                 // bright jump
-        ThoughtType::Idea =>
-            &[(523.25, 40), (659.25, 40), (987.77, 100)],  // lightbulb
-        ThoughtType::FactLearned =>
-            &[(587.33, 80), (783.99, 100)],                 // fact stored
-        ThoughtType::LessonLearned =>
-            &[(659.25, 80), (783.99, 100)],                 // wisdom rise
-        ThoughtType::Finding =>
-            &[(698.46, 80), (880.00, 100)],                 // discovery
+        ThoughtType::Insight => &[(659.25, 80), (987.77, 100)], // bright jump
+        ThoughtType::Idea => &[(523.25, 40), (659.25, 40), (987.77, 100)], // lightbulb
+        ThoughtType::FactLearned => &[(587.33, 80), (783.99, 100)], // fact stored
+        ThoughtType::LessonLearned => &[(659.25, 80), (783.99, 100)], // wisdom rise
+        ThoughtType::Finding => &[(698.46, 80), (880.00, 100)], // discovery
 
         // ── Questions & exploration ───────────────────────────────────────────
-        ThoughtType::Question =>
-            &[(783.99, 90), (880.00, 90)],                  // unresolved rise
-        ThoughtType::Wonder =>
-            &[(523.25, 55), (587.33, 55), (659.25, 70)],   // dreamy ascent
-        ThoughtType::Hypothesis =>
-            &[(587.33, 90), (493.88, 90)],                  // tentative descent
-        ThoughtType::Experiment =>
-            &[(440.00, 60), (523.25, 60), (440.00, 60)],   // exploratory bounce
+        ThoughtType::Question => &[(783.99, 90), (880.00, 90)], // unresolved rise
+        ThoughtType::Wonder => &[(523.25, 55), (587.33, 55), (659.25, 70)], // dreamy ascent
+        ThoughtType::Hypothesis => &[(587.33, 90), (493.88, 90)], // tentative descent
+        ThoughtType::Experiment => &[(440.00, 60), (523.25, 60), (440.00, 60)], // exploratory bounce
 
         // ── Patterns ──────────────────────────────────────────────────────────
-        ThoughtType::PatternDetected =>
-            &[(523.25, 60), (659.25, 60), (523.25, 60)],   // palindrome = pattern
+        ThoughtType::PatternDetected => &[(523.25, 60), (659.25, 60), (523.25, 60)], // palindrome = pattern
 
         // ── Planning & decisions ──────────────────────────────────────────────
-        ThoughtType::Plan =>
-            &[(523.25, 70), (783.99, 110)],                 // perfect fifth, stable
-        ThoughtType::Subgoal =>
-            &[(329.63, 70), (392.00, 100)],                 // small step up
-        ThoughtType::Decision =>
-            &[(392.00, 70), (523.25, 110)],                 // conclusive arrival
-        ThoughtType::StrategyShift =>
-            &[(523.25, 55), (698.46, 55), (523.25, 70)],   // pivot
+        ThoughtType::Plan => &[(523.25, 70), (783.99, 110)], // perfect fifth, stable
+        ThoughtType::Subgoal => &[(329.63, 70), (392.00, 100)], // small step up
+        ThoughtType::Decision => &[(392.00, 70), (523.25, 110)], // conclusive arrival
+        ThoughtType::StrategyShift => &[(523.25, 55), (698.46, 55), (523.25, 70)], // pivot
 
         // ── Action & completion ───────────────────────────────────────────────
-        ThoughtType::ActionTaken =>
-            &[(392.00, 70), (523.25, 100)],                 // purposeful
-        ThoughtType::TaskComplete =>
-            &[(523.25, 55), (659.25, 55), (783.99, 70)],   // C major arpeggio up
-        ThoughtType::Checkpoint =>
-            &[(523.25, 80), (659.25, 100)],                 // clean save
+        ThoughtType::ActionTaken => &[(392.00, 70), (523.25, 100)], // purposeful
+        ThoughtType::TaskComplete => &[(523.25, 55), (659.25, 55), (783.99, 70)], // C major arpeggio up
+        ThoughtType::Checkpoint => &[(523.25, 80), (659.25, 100)],                // clean save
 
         // ── State & archive ───────────────────────────────────────────────────
-        ThoughtType::StateSnapshot =>
-            &[(329.63, 70), (261.63, 100)],                 // camera settle
-        ThoughtType::Handoff =>
-            &[(392.00, 55), (329.63, 55), (261.63, 70)],   // descending pass
-        ThoughtType::Summary =>
-            &[(523.25, 80), (392.00, 100)],                 // gentle close
+        ThoughtType::StateSnapshot => &[(329.63, 70), (261.63, 100)], // camera settle
+        ThoughtType::Handoff => &[(392.00, 55), (329.63, 55), (261.63, 70)], // descending pass
+        ThoughtType::Summary => &[(523.25, 80), (392.00, 100)],       // gentle close
 
         // ── User & relationship ───────────────────────────────────────────────
-        ThoughtType::PreferenceUpdate =>
-            &[(587.33, 80), (698.46, 100)],                 // soft note
-        ThoughtType::UserTrait =>
-            &[(659.25, 80), (880.00, 100)],                 // observation noted
-        ThoughtType::RelationshipUpdate =>
-            &[(698.46, 55), (880.00, 55), (698.46, 70)],   // warm embrace
+        ThoughtType::PreferenceUpdate => &[(587.33, 80), (698.46, 100)], // soft note
+        ThoughtType::UserTrait => &[(659.25, 80), (880.00, 100)],        // observation noted
+        ThoughtType::RelationshipUpdate => &[(698.46, 55), (880.00, 55), (698.46, 70)], // warm embrace
 
         // ── Constraints ───────────────────────────────────────────────────────
-        ThoughtType::Constraint =>
-            &[(349.23, 80), (293.66, 100)],                 // grounding descent
+        ThoughtType::Constraint => &[(349.23, 80), (293.66, 100)], // grounding descent
     }
 }
 
@@ -344,7 +316,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
         if thought_sounds_enabled {
-            config.service = config.service.with_on_thought_appended(Arc::new(play_thought_sound));
+            config.service = config
+                .service
+                .with_on_thought_appended(Arc::new(play_thought_sound));
         }
     }
 
@@ -1014,16 +988,29 @@ fn print_chain_summary(
         "Agents",
         "Storage Location",
     ];
+    // Open each chain to read live counts — the registry JSON is only updated on
+    // migration so its thought_count/agent_count can be stale.
     let rows: Vec<Vec<String>> = registry
         .chains
         .values()
         .map(|e| {
+            let (thought_count, agent_count) = MentisDb::open_with_storage(
+                e.storage_adapter
+                    .for_chain_key(&config.service.chain_dir, &e.chain_key),
+            )
+            .map(|chain| {
+                (
+                    chain.thoughts().len() as u64,
+                    chain.agent_registry().agents.len(),
+                )
+            })
+            .unwrap_or((e.thought_count, e.agent_count));
             vec![
                 e.chain_key.clone(),
                 e.version.to_string(),
                 e.storage_adapter.to_string(),
-                e.thought_count.to_string(),
-                e.agent_count.to_string(),
+                thought_count.to_string(),
+                agent_count.to_string(),
                 e.storage_location.clone(),
             ]
         })

@@ -192,10 +192,7 @@ impl MentisDbServiceConfig {
     /// The callback receives the [`ThoughtType`] of the committed thought and is
     /// invoked from a `tokio::task::spawn_blocking` task, so blocking work (e.g.
     /// audio playback) is safe inside it.
-    pub fn with_on_thought_appended(
-        mut self,
-        cb: Arc<dyn Fn(ThoughtType) + Send + Sync>,
-    ) -> Self {
+    pub fn with_on_thought_appended(mut self, cb: Arc<dyn Fn(ThoughtType) + Send + Sync>) -> Self {
         self.on_thought_appended = Some(cb);
         self
     }
