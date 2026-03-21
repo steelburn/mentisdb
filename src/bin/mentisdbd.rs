@@ -21,6 +21,7 @@
 //! - `MENTISDB_TLS_CERT` (default `~/.cloudllm/mentisdb/tls/cert.pem`)
 //! - `MENTISDB_TLS_KEY` (default `~/.cloudllm/mentisdb/tls/key.pem`)
 //! - `MENTISDB_STARTUP_SOUND` (default `true`; set `0`/`false`/`no`/`off` to silence)
+//! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought sounds)
 //! - `RUST_LOG`
 
 use env_logger::Env;
@@ -29,8 +30,9 @@ use mentisdb::server::{
 };
 use mentisdb::{
     load_registered_chains, migrate_registered_chains_with_adapter, migrate_skill_registry,
-    MentisDb, MentisDbMigrationEvent, SkillRegistry,
+    MentisDb, MentisDbMigrationEvent, SkillRegistry, ThoughtType,
 };
+use std::sync::Arc;
 
 const MENTIS_BANNER: &str = r#"███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
 ████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
@@ -120,6 +122,7 @@ impl rodio::Source for SquareWave {
 /// - **D5** (587 Hz) — "D"  ← actual note name
 /// - **B5** (988 Hz) — "B"  ← actual note name, high octave
 ///
+/// Called **after** the banner has been flushed to stdout.
 /// Silenced by setting `MENTISDB_STARTUP_SOUND=0` (or `false`/`no`/`off`).
 #[cfg(feature = "startup-sound")]
 fn play_startup_jingle() {
@@ -131,6 +134,106 @@ fn play_startup_jingle() {
     }
     // men   tis    D      B
     let notes: &[(f32, u64)] = &[(523.25, 160), (659.25, 160), (587.33, 160), (987.77, 380)];
+    play_notes(notes);
+}
+
+// ── Per-thought-type sounds ───────────────────────────────────────────────────
+
+/// Returns the note sequence `(freq_hz, duration_ms)` for a given [`ThoughtType`].
+///
+/// Every sequence totals ≤ 200 ms so the sound never disrupts the workflow.
+/// Sequences are designed to *feel* like the thought type:
+/// - Rising tones → discovery, insight, completion.
+/// - Falling tones → mistakes, handoffs, settling.
+/// - Rapid ascending arpeggio → **Surprise** (Metal Gear Solid "!" alert).
+/// - Palindromic patterns → **PatternDetected**.
+#[cfg(feature = "startup-sound")]
+fn thought_sound_sequence(tt: ThoughtType) -> &'static [(f32, u64)] {
+    // Note reference (Hz):
+    // C4=261  D4=293  E4=329  F4=349  G4=392  A4=440  B4=493
+    // C5=523  D5=587  E5=659  F5=698  G5=783  A5=880  B5=987  C6=1046
+    match tt {
+        // ── Surprise: MGS "!" rapid ascending arpeggio ────────────────────────
+        ThoughtType::Surprise =>
+            &[(523.25, 35), (659.25, 35), (783.99, 35), (1046.50, 95)],
+
+        // ── Mistakes & corrections ────────────────────────────────────────────
+        ThoughtType::Mistake =>
+            &[(783.99, 80), (523.25, 100)],                 // high → low, oops
+        ThoughtType::Correction =>
+            &[(293.66, 50), (523.25, 50), (659.25, 80)],   // resolve upward
+        ThoughtType::AssumptionInvalidated =>
+            &[(783.99, 80), (523.25, 60)],                  // deflate
+
+        // ── Discovery & learning ──────────────────────────────────────────────
+        ThoughtType::Insight =>
+            &[(659.25, 80), (987.77, 100)],                 // bright jump
+        ThoughtType::Idea =>
+            &[(523.25, 40), (659.25, 40), (987.77, 100)],  // lightbulb
+        ThoughtType::FactLearned =>
+            &[(587.33, 80), (783.99, 100)],                 // fact stored
+        ThoughtType::LessonLearned =>
+            &[(659.25, 80), (783.99, 100)],                 // wisdom rise
+        ThoughtType::Finding =>
+            &[(698.46, 80), (880.00, 100)],                 // discovery
+
+        // ── Questions & exploration ───────────────────────────────────────────
+        ThoughtType::Question =>
+            &[(783.99, 90), (880.00, 90)],                  // unresolved rise
+        ThoughtType::Wonder =>
+            &[(523.25, 55), (587.33, 55), (659.25, 70)],   // dreamy ascent
+        ThoughtType::Hypothesis =>
+            &[(587.33, 90), (493.88, 90)],                  // tentative descent
+        ThoughtType::Experiment =>
+            &[(440.00, 60), (523.25, 60), (440.00, 60)],   // exploratory bounce
+
+        // ── Patterns ──────────────────────────────────────────────────────────
+        ThoughtType::PatternDetected =>
+            &[(523.25, 60), (659.25, 60), (523.25, 60)],   // palindrome = pattern
+
+        // ── Planning & decisions ──────────────────────────────────────────────
+        ThoughtType::Plan =>
+            &[(523.25, 70), (783.99, 110)],                 // perfect fifth, stable
+        ThoughtType::Subgoal =>
+            &[(329.63, 70), (392.00, 100)],                 // small step up
+        ThoughtType::Decision =>
+            &[(392.00, 70), (523.25, 110)],                 // conclusive arrival
+        ThoughtType::StrategyShift =>
+            &[(523.25, 55), (698.46, 55), (523.25, 70)],   // pivot
+
+        // ── Action & completion ───────────────────────────────────────────────
+        ThoughtType::ActionTaken =>
+            &[(392.00, 70), (523.25, 100)],                 // purposeful
+        ThoughtType::TaskComplete =>
+            &[(523.25, 55), (659.25, 55), (783.99, 70)],   // C major arpeggio up
+        ThoughtType::Checkpoint =>
+            &[(523.25, 80), (659.25, 100)],                 // clean save
+
+        // ── State & archive ───────────────────────────────────────────────────
+        ThoughtType::StateSnapshot =>
+            &[(329.63, 70), (261.63, 100)],                 // camera settle
+        ThoughtType::Handoff =>
+            &[(392.00, 55), (329.63, 55), (261.63, 70)],   // descending pass
+        ThoughtType::Summary =>
+            &[(523.25, 80), (392.00, 100)],                 // gentle close
+
+        // ── User & relationship ───────────────────────────────────────────────
+        ThoughtType::PreferenceUpdate =>
+            &[(587.33, 80), (698.46, 100)],                 // soft note
+        ThoughtType::UserTrait =>
+            &[(659.25, 80), (880.00, 100)],                 // observation noted
+        ThoughtType::RelationshipUpdate =>
+            &[(698.46, 55), (880.00, 55), (698.46, 70)],   // warm embrace
+
+        // ── Constraints ───────────────────────────────────────────────────────
+        ThoughtType::Constraint =>
+            &[(349.23, 80), (293.66, 100)],                 // grounding descent
+    }
+}
+
+/// Plays a sequence of square-wave notes.
+#[cfg(feature = "startup-sound")]
+fn play_notes(notes: &[(f32, u64)]) {
     if let Ok((_stream, handle)) = rodio::OutputStream::try_default() {
         if let Ok(sink) = rodio::Sink::try_new(&handle) {
             for &(freq, ms) in notes {
@@ -141,16 +244,23 @@ fn play_startup_jingle() {
     }
 }
 
+/// Plays the sound associated with a [`ThoughtType`].
+///
+/// Enabled only when the `startup-sound` feature is compiled in **and**
+/// `MENTISDB_THOUGHT_SOUNDS` is set to a truthy value (defaults to `false`).
+#[cfg(feature = "startup-sound")]
+pub fn play_thought_sound(tt: ThoughtType) {
+    play_notes(thought_sound_sequence(tt));
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logger();
-    #[cfg(feature = "startup-sound")]
-    play_startup_jingle();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?
     } else {
         None
     };
-    let config = MentisDbServerConfig::from_env();
+    let mut config = MentisDbServerConfig::from_env();
 
     // Run migrations before starting servers.  Progress lines print live here
     // (rare — only on first run or version upgrades).
@@ -227,6 +337,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => panic!("Skill registry migration failed — cannot start server: {e}"),
     };
 
+    // Register per-thought sound callback when MENTISDB_THOUGHT_SOUNDS is enabled.
+    #[cfg(feature = "startup-sound")]
+    {
+        let thought_sounds_enabled = std::env::var("MENTISDB_THOUGHT_SOUNDS")
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if thought_sounds_enabled {
+            config.service = config.service.with_on_thought_appended(Arc::new(play_thought_sound));
+        }
+    }
+
     let handles = start_servers(config.clone()).await?;
 
     // ── Useful info first ────────────────────────────────────────────────────
@@ -240,6 +361,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ── Startup summary at the bottom ────────────────────────────────────────
     println!();
     print_banner();
+    // Flush banner to stdout before the jingle plays.
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    }
+    #[cfg(feature = "startup-sound")]
+    play_startup_jingle();
     println!("mentisdb v{}", env!("CARGO_PKG_VERSION"));
     println!("mentisdbd started");
 
@@ -337,6 +465,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::var("MENTISDB_STARTUP_SOUND")
             .ok()
             .or_else(|| Some("true (default)".to_string())),
+    );
+    #[cfg(feature = "startup-sound")]
+    print_env_var(
+        "MENTISDB_THOUGHT_SOUNDS",
+        std::env::var("MENTISDB_THOUGHT_SOUNDS")
+            .ok()
+            .or_else(|| Some("false (default)".to_string())),
     );
 
     if migration_reports.is_empty() {
@@ -718,8 +853,8 @@ fn ascii_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
         s
     };
 
-    let top    = bar("┌", "─", "┬", "┐");
-    let mid    = bar("├", "─", "┼", "┤");
+    let top = bar("┌", "─", "┬", "┐");
+    let mid = bar("├", "─", "┼", "┤");
     let bottom = bar("└", "─", "┴", "┘");
 
     let fmt_row = |cells: &[String]| {
@@ -764,11 +899,7 @@ fn ascii_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
 /// (e.g. a chain name) to group subsequent rows under it.
 ///
 /// `sections` is a slice of `(section_label, rows_for_that_section)`.
-fn ascii_table_grouped(
-    title: &str,
-    headers: &[&str],
-    sections: &[(String, Vec<Vec<String>>)],
-) {
+fn ascii_table_grouped(title: &str, headers: &[&str], sections: &[(String, Vec<Vec<String>>)]) {
     let ncols = headers.len();
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for (label, rows) in sections {
@@ -802,10 +933,10 @@ fn ascii_table_grouped(
         format!("{}{}{}", left, fill.repeat(total_inner), right)
     };
 
-    let top    = bar("┌", "─", "┬", "┐");
-    let mid    = bar("├", "─", "┼", "┤");
+    let top = bar("┌", "─", "┬", "┐");
+    let mid = bar("├", "─", "┼", "┤");
     let bottom = bar("└", "─", "┴", "┘");
-    let sec_mid  = section_bar("├", "─", "┤");
+    let sec_mid = section_bar("├", "─", "┤");
     let sec_mid2 = bar("├", "─", "┼", "┤");
 
     let fmt_row = |cells: &[String]| {
@@ -838,7 +969,11 @@ fn ascii_table_grouped(
         } else {
             label.to_string()
         };
-        format!("│ {PINK}{:<width$}{RESET} │", label, width = total_inner - 2)
+        format!(
+            "│ {PINK}{:<width$}{RESET} │",
+            label,
+            width = total_inner - 2
+        )
     };
 
     if !title.is_empty() {
@@ -871,7 +1006,14 @@ fn print_chain_summary(
         return Ok(());
     }
 
-    let headers = &["Chain Key", "Ver", "Adapter", "Thoughts", "Agents", "Storage Location"];
+    let headers = &[
+        "Chain Key",
+        "Ver",
+        "Adapter",
+        "Thoughts",
+        "Agents",
+        "Storage Location",
+    ];
     let rows: Vec<Vec<String>> = registry
         .chains
         .values()

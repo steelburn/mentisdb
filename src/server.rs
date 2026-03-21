@@ -104,7 +104,7 @@ const SKILL_SAFETY_WARNINGS: [&str; 4] = [
 /// assert!(!config.verbose);
 /// assert!(config.log_file.is_none());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MentisDbServiceConfig {
     /// Directory containing chain storage files.
     pub chain_dir: PathBuf,
@@ -124,6 +124,27 @@ pub struct MentisDbServiceConfig {
     /// `FLUSH_THRESHOLD - 1` thoughts may be lost on a hard crash or power failure.
     /// Defaults to `true` (full per-write durability).
     pub auto_flush: bool,
+    /// Optional callback fired (in a `spawn_blocking` task) after every successful
+    /// thought append. Receives the [`ThoughtType`] of the newly committed thought.
+    /// Set by the binary layer (e.g. `mentisdbd`) — `None` by default.
+    pub on_thought_appended: Option<Arc<dyn Fn(ThoughtType) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for MentisDbServiceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MentisDbServiceConfig")
+            .field("chain_dir", &self.chain_dir)
+            .field("default_chain_key", &self.default_chain_key)
+            .field("default_storage_adapter", &self.default_storage_adapter)
+            .field("verbose", &self.verbose)
+            .field("log_file", &self.log_file)
+            .field("auto_flush", &self.auto_flush)
+            .field(
+                "on_thought_appended",
+                &self.on_thought_appended.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
 }
 
 impl MentisDbServiceConfig {
@@ -140,6 +161,7 @@ impl MentisDbServiceConfig {
             verbose: false,
             log_file: None,
             auto_flush: true,
+            on_thought_appended: None,
         }
     }
 
@@ -162,6 +184,19 @@ impl MentisDbServiceConfig {
     /// significantly higher concurrent write throughput.
     pub fn with_auto_flush(mut self, auto_flush: bool) -> Self {
         self.auto_flush = auto_flush;
+        self
+    }
+
+    /// Register a callback that fires after every successful thought append.
+    ///
+    /// The callback receives the [`ThoughtType`] of the committed thought and is
+    /// invoked from a `tokio::task::spawn_blocking` task, so blocking work (e.g.
+    /// audio playback) is safe inside it.
+    pub fn with_on_thought_appended(
+        mut self,
+        cb: Arc<dyn Fn(ThoughtType) + Send + Sync>,
+    ) -> Self {
+        self.on_thought_appended = Some(cb);
         self
     }
 }
@@ -1134,6 +1169,11 @@ impl MentisDbService {
             result_count: Some(1),
             note: None,
         });
+        if let Some(ref cb) = self.config.on_thought_appended {
+            let cb = cb.clone();
+            let tt = thought.thought_type;
+            tokio::task::spawn_blocking(move || cb(tt));
+        }
         Ok(AppendThoughtResponse {
             thought: thought_to_json(&chain, &thought),
             head_hash: chain.head_hash().map(ToOwned::to_owned),
@@ -1193,6 +1233,11 @@ impl MentisDbService {
             result_count: Some(1),
             note: None,
         });
+        if let Some(ref cb) = self.config.on_thought_appended {
+            let cb = cb.clone();
+            let tt = thought.thought_type;
+            tokio::task::spawn_blocking(move || cb(tt));
+        }
         Ok(AppendThoughtResponse {
             thought: thought_to_json(&chain, &thought),
             head_hash: chain.head_hash().map(ToOwned::to_owned),
