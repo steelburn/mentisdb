@@ -42,7 +42,7 @@ use crate::{
     SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
     ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
-    MENTISDB_CURRENT_VERSION, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
+    MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -86,47 +86,122 @@ const SKILL_SAFETY_WARNINGS: [&str; 4] = [
     "Treat skill content as advisory until provenance and requested capabilities are validated.",
 ];
 
-/// Configuration shared by MentisDB server variants.
+/// Shared storage and behaviour configuration used by every MentisDB server
+/// variant (HTTP MCP, HTTP REST, HTTPS MCP, HTTPS REST, and the web dashboard).
 ///
-/// # Example
+/// `MentisDbServiceConfig` is the *inner* configuration object — it describes
+/// *what* the service stores and *how* it behaves, independent of which TCP
+/// ports or TLS settings the outer [`MentisDbServerConfig`] chooses.
+///
+/// ## Fields at a glance
+///
+/// | Field | Default | Purpose |
+/// |-------|---------|---------|
+/// | [`chain_dir`](Self::chain_dir) | (required) | On-disk directory that contains all chain storage files. |
+/// | [`default_chain_key`](Self::default_chain_key) | (required) | Chain key used when a request omits `chain_key`. |
+/// | [`default_storage_adapter`](Self::default_storage_adapter) | (required) | Storage format applied to newly created chains. |
+/// | [`verbose`](Self::verbose) | `false` | Mirror every read/write to the `mentisdb::interaction` logger. |
+/// | [`log_file`](Self::log_file) | `None` | Optional file path for interaction logs (independent of console). |
+/// | [`auto_flush`](Self::auto_flush) | `true` | Flush binary chains to disk on every append (durability vs. throughput). |
+/// | [`on_thought_appended`](Self::on_thought_appended) | `None` | Optional callback invoked after every committed thought. |
+///
+/// ## Building a config and embedding it in Axum
+///
+/// The typical library-consumer workflow is:
+/// 1. Construct a `MentisDbServiceConfig` with [`new`](Self::new) and chain
+///    optional builder methods.
+/// 2. Pass it to [`mcp_router`] or [`rest_router`] to get an [`axum::Router`].
+/// 3. Merge that router into your existing Axum application.
 ///
 /// ```rust,no_run
-/// use std::path::PathBuf;
-/// use mentisdb::StorageAdapterKind;
-/// use mentisdb::server::MentisDbServiceConfig;
+/// use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+/// use mentisdb::{StorageAdapterKind, ThoughtType};
+/// use mentisdb::server::{MentisDbServiceConfig, mcp_router};
 ///
-/// let config = MentisDbServiceConfig::new(
-///     PathBuf::from("/tmp/mentisdb"),
-///     "borganism-brain",
-///     StorageAdapterKind::Jsonl,
-/// );
-/// assert_eq!(config.default_chain_key, "borganism-brain");
-/// assert!(!config.verbose);
-/// assert!(config.log_file.is_none());
+/// #[tokio::main]
+/// async fn main() {
+///     // 1. Build the service config
+///     let config = MentisDbServiceConfig::new(
+///         PathBuf::from("/var/lib/mentisdb"),
+///         "my-agent-brain",
+///         StorageAdapterKind::Binary,
+///     )
+///     .with_verbose(true)
+///     .with_log_file(Some(PathBuf::from("/var/log/mentisdb/interactions.log")))
+///     .with_auto_flush(false)   // batched writes for higher throughput
+///     .with_on_thought_appended(Arc::new(|thought_type: ThoughtType| {
+///         // E.g. play an audio chime in the daemon — blocking I/O is safe here
+///         // because the callback runs inside `tokio::task::spawn_blocking`.
+///         eprintln!("💡 new thought committed: {thought_type}");
+///     }));
+///
+///     // 2. Turn config into an Axum router
+///     let router = mcp_router(config);
+///
+///     // 3. Serve it — port 0 lets the OS pick a free port (useful in tests)
+///     let listener = tokio::net::TcpListener::bind("127.0.0.1:9471").await.unwrap();
+///     axum::serve(listener, router).await.unwrap();
+/// }
 /// ```
 #[derive(Clone)]
 pub struct MentisDbServiceConfig {
-    /// Directory containing chain storage files.
-    pub chain_dir: PathBuf,
-    /// Default chain key used when requests omit `chain_key`.
-    pub default_chain_key: String,
-    /// Default storage adapter used when creating new chains.
-    pub default_storage_adapter: StorageAdapterKind,
-    /// When true, mirror each MentisDB read or write interaction to the console logger.
-    pub verbose: bool,
-    /// Optional file path that receives interaction logs regardless of console verbosity.
-    pub log_file: Option<PathBuf>,
-    /// When `false`, newly opened [`BinaryStorageAdapter`] chains flush to disk every
-    /// [`mentisdb::FLUSH_THRESHOLD`] appends instead of on every single write.
+    /// Root directory that contains all MentisDB chain storage files.
     ///
-    /// Set to `false` (via `MENTISDB_AUTO_FLUSH=false`) for higher write throughput when
-    /// operating as a multi-agent hub.  The trade-off is that up to
-    /// `FLUSH_THRESHOLD - 1` thoughts may be lost on a hard crash or power failure.
-    /// Defaults to `true` (full per-write durability).
+    /// Each chain is stored as a sub-directory (or pair of files) inside this
+    /// directory. The directory is created automatically if it does not exist.
+    /// Use [`default_mentisdb_dir`] for the platform-appropriate default, or
+    /// supply an explicit path for tests and embedded deployments.
+    pub chain_dir: PathBuf,
+    /// Chain key applied to requests that do not specify one explicitly.
+    ///
+    /// Most MentisDB operations accept an optional `chain_key` parameter. When
+    /// it is absent the server falls back to this value. Convention is to use a
+    /// human-readable slug such as `"borganism-brain"` or `"project-copilot"`.
+    pub default_chain_key: String,
+    /// Storage format used when a request triggers the creation of a brand-new
+    /// chain.
+    ///
+    /// Existing chains always use their own on-disk format regardless of this
+    /// setting. [`StorageAdapterKind::Binary`] is the recommended default for
+    /// production use; [`StorageAdapterKind::Jsonl`] is human-readable and
+    /// convenient for development and debugging.
+    pub default_storage_adapter: StorageAdapterKind,
+    /// When `true`, every read and write operation is logged at `INFO` level
+    /// through the `mentisdb::interaction` logger target.
+    ///
+    /// Defaults to `false`. Enable via `MENTISDB_VERBOSE=true` in the daemon,
+    /// or by calling [`with_verbose`](Self::with_verbose).
+    pub verbose: bool,
+    /// Optional path to a file that receives one interaction log line per
+    /// operation, regardless of the [`verbose`](Self::verbose) setting.
+    ///
+    /// Useful for recording MentisDB traffic to a dedicated audit trail. The
+    /// parent directory is created automatically if it does not exist.
+    /// Controlled by `MENTISDB_LOG_FILE` in the daemon.
+    pub log_file: Option<PathBuf>,
+    /// Controls whether [`BinaryStorageAdapter`] chains flush to disk after
+    /// **every** append (`true`) or batch writes until a threshold is reached
+    /// (`false`).
+    ///
+    /// * `true` (default) — full per-write durability; at most zero thoughts are
+    ///   lost on a hard crash.
+    /// * `false` — batched writes; up to `FLUSH_THRESHOLD - 1` thoughts may be
+    ///   lost on a hard crash, but write throughput increases significantly for
+    ///   high-frequency multi-agent hubs.
+    ///
+    /// Controlled by `MENTISDB_AUTO_FLUSH=false` in the daemon.
     pub auto_flush: bool,
-    /// Optional callback fired (in a `spawn_blocking` task) after every successful
-    /// thought append. Receives the [`ThoughtType`] of the newly committed thought.
-    /// Set by the binary layer (e.g. `mentisdbd`) — `None` by default.
+    /// Optional callback fired after every successfully committed thought.
+    ///
+    /// The callback receives the [`ThoughtType`] of the newly committed thought
+    /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
+    /// safe to perform blocking I/O (e.g. writing a sound file, updating a
+    /// status LED, or sending a desktop notification).
+    ///
+    /// This hook is used by `mentisdbd` to emit audio feedback on thought
+    /// commits. Library consumers can attach their own hook via
+    /// [`with_on_thought_appended`](Self::with_on_thought_appended). Defaults
+    /// to `None` (no callback).
     pub on_thought_appended: Option<Arc<dyn Fn(ThoughtType) + Send + Sync>>,
 }
 
@@ -148,7 +223,33 @@ impl std::fmt::Debug for MentisDbServiceConfig {
 }
 
 impl MentisDbServiceConfig {
-    /// Create a new service configuration.
+    /// Create a new [`MentisDbServiceConfig`] with the three required settings.
+    ///
+    /// All optional fields start at their safe defaults:
+    /// - `verbose` → `false`
+    /// - `log_file` → `None`
+    /// - `auto_flush` → `true` (full per-write durability)
+    /// - `on_thought_appended` → `None`
+    ///
+    /// Use the `with_*` builder methods to override individual fields.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::StorageAdapterKind;
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "borganism-brain",
+    ///     StorageAdapterKind::Binary,
+    /// );
+    /// assert_eq!(config.default_chain_key, "borganism-brain");
+    /// assert!(!config.verbose);
+    /// assert!(config.log_file.is_none());
+    /// assert!(config.auto_flush);
+    /// ```
     pub fn new(
         chain_dir: PathBuf,
         default_chain_key: impl Into<String>,
@@ -165,90 +266,273 @@ impl MentisDbServiceConfig {
         }
     }
 
-    /// Enable or disable verbose interaction logging for the service.
+    /// Enable or disable verbose interaction logging for this service.
+    ///
+    /// When `true`, every read and write operation is emitted at `INFO` level
+    /// through the `mentisdb::interaction` logger target. Equivalent to setting
+    /// `MENTISDB_VERBOSE=true` in the daemon.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::StorageAdapterKind;
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "my-chain",
+    ///     StorageAdapterKind::Binary,
+    /// )
+    /// .with_verbose(true);
+    /// assert!(config.verbose);
+    /// ```
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
-    /// Configure an optional interaction log file for daemon read/write logs.
+    /// Configure an optional file path for interaction logs.
+    ///
+    /// When `Some(path)` is provided, every operation is appended to that file
+    /// regardless of the [`verbose`](Self::verbose) console setting — making it
+    /// suitable as a dedicated audit trail. The parent directory is created
+    /// automatically if it does not exist.
+    ///
+    /// Pass `None` to disable file logging (the default).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::StorageAdapterKind;
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "my-chain",
+    ///     StorageAdapterKind::Binary,
+    /// )
+    /// .with_log_file(Some(PathBuf::from("/var/log/mentisdb/interactions.log")));
+    /// assert!(config.log_file.is_some());
+    /// ```
     pub fn with_log_file(mut self, log_file: Option<PathBuf>) -> Self {
         self.log_file = log_file;
         self
     }
 
-    /// Override the `auto_flush` setting for chain storage adapters.
+    /// Override the per-write durability setting for chain storage adapters.
     ///
-    /// When `false`, the [`BinaryStorageAdapter`] batches writes and flushes every
-    /// [`mentisdb::FLUSH_THRESHOLD`] appends — trading per-write durability for
-    /// significantly higher concurrent write throughput.
+    /// * `true` (default) — every append is immediately flushed to the OS page
+    ///   cache. At most zero committed thoughts are lost on a hard crash.
+    /// * `false` — writes are batched; the [`BinaryStorageAdapter`] flushes
+    ///   every `FLUSH_THRESHOLD` appends. This trades durability for
+    ///   significantly higher write throughput on multi-agent hubs. Up to
+    ///   `FLUSH_THRESHOLD - 1` thoughts may be unrecoverable after a sudden
+    ///   power failure or `SIGKILL`.
+    ///
+    /// Equivalent to `MENTISDB_AUTO_FLUSH=false` in the daemon.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use mentisdb::StorageAdapterKind;
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// // High-throughput hub — accept slightly reduced durability
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "hub-brain",
+    ///     StorageAdapterKind::Binary,
+    /// )
+    /// .with_auto_flush(false);
+    /// assert!(!config.auto_flush);
+    /// ```
     pub fn with_auto_flush(mut self, auto_flush: bool) -> Self {
         self.auto_flush = auto_flush;
         self
     }
 
-    /// Register a callback that fires after every successful thought append.
+    /// Register a callback that fires after every successfully committed thought.
     ///
-    /// The callback receives the [`ThoughtType`] of the committed thought and is
-    /// invoked from a `tokio::task::spawn_blocking` task, so blocking work (e.g.
-    /// audio playback) is safe inside it.
+    /// The callback receives the [`ThoughtType`] of the newly committed thought
+    /// and is invoked inside a `tokio::task::spawn_blocking` task, making it
+    /// safe to perform blocking I/O such as audio playback, writing to a
+    /// status device, or sending a desktop notification.
+    ///
+    /// This is the primary extension point used by `mentisdbd` to emit audio
+    /// feedback. Library consumers can attach any `Fn(ThoughtType) + Send +
+    /// Sync` closure. To remove an existing callback, use
+    /// `config.on_thought_appended = None` directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::{path::PathBuf, sync::Arc};
+    /// use mentisdb::{StorageAdapterKind, ThoughtType};
+    /// use mentisdb::server::MentisDbServiceConfig;
+    ///
+    /// let config = MentisDbServiceConfig::new(
+    ///     PathBuf::from("/tmp/mentisdb"),
+    ///     "my-chain",
+    ///     StorageAdapterKind::Binary,
+    /// )
+    /// .with_on_thought_appended(Arc::new(|thought_type: ThoughtType| {
+    ///     // This runs in a blocking thread — safe for slow I/O
+    ///     eprintln!("🧠 committed: {thought_type}");
+    /// }));
+    /// assert!(config.on_thought_appended.is_some());
+    /// ```
     pub fn with_on_thought_appended(mut self, cb: Arc<dyn Fn(ThoughtType) + Send + Sync>) -> Self {
         self.on_thought_appended = Some(cb);
         self
     }
 }
 
-/// Runtime configuration for the standalone `mentisdbd` process.
+/// Full runtime configuration for the standalone `mentisdbd` daemon process.
 ///
-/// Environment variables:
+/// This is the *outer* configuration that combines a [`MentisDbServiceConfig`]
+/// (storage and behaviour) with the network topology: which ports the HTTP,
+/// HTTPS, and dashboard servers bind to, and where TLS certificates live.
 ///
-/// - `MENTISDB_DIR`
-/// - `MENTISDB_DEFAULT_KEY`
-/// - `MENTISDB_DEFAULT_STORAGE_ADAPTER`
-/// - `MENTISDB_VERBOSE` (defaults to `true` when unset)
-/// - `MENTISDB_LOG_FILE`
-/// - `MENTISDB_BIND_HOST`
-/// - `MENTISDB_MCP_PORT`
-/// - `MENTISDB_REST_PORT`
-/// - `MENTISDB_AUTO_FLUSH` (defaults to `true`; set to `false` to enable write
-///   buffering in [`BinaryStorageAdapter`] for higher append throughput at the
-///   cost of potentially losing the last `<16` thoughts on a hard crash)
+/// The recommended way to construct this is [`MentisDbServerConfig::from_env`],
+/// which reads every `MENTISDB_*` environment variable and applies safe
+/// defaults for any that are missing.
 ///
-/// # Example
+/// ## Configuration via environment
+///
+/// | Variable | Default | Description |
+/// |---|---|---|
+/// | `MENTISDB_DIR` | `~/.cloudllm/mentisdb` | Root directory for all chain storage. |
+/// | `MENTISDB_DEFAULT_KEY` | `borganism-brain` | Default chain key for requests that omit one. |
+/// | `MENTISDB_DEFAULT_STORAGE_ADAPTER` / `MENTISDB_STORAGE_ADAPTER` | `binary` | Storage format for new chains (`binary` or `jsonl`). |
+/// | `MENTISDB_VERBOSE` | `true` | Log each operation to the `mentisdb::interaction` target. |
+/// | `MENTISDB_LOG_FILE` | *(none)* | Optional file path for interaction logs. |
+/// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
+/// | `MENTISDB_BIND_HOST` | `127.0.0.1` | IP address for all server sockets. |
+/// | `MENTISDB_MCP_PORT` | `9471` | Port for the HTTP MCP server. |
+/// | `MENTISDB_REST_PORT` | `9472` | Port for the HTTP REST server. |
+/// | `MENTISDB_HTTPS_MCP_PORT` | `9473` | Port for the HTTPS MCP server (set to `0` to disable). |
+/// | `MENTISDB_HTTPS_REST_PORT` | `9474` | Port for the HTTPS REST server (set to `0` to disable). |
+/// | `MENTISDB_TLS_CERT` | `<MENTISDB_DIR>/tls/cert.pem` | Path to the TLS certificate PEM. |
+/// | `MENTISDB_TLS_KEY` | `<MENTISDB_DIR>/tls/key.pem` | Path to the TLS private-key PEM. |
+/// | `MENTISDB_DASHBOARD_PORT` | `9475` | Port for the HTTPS web dashboard (set to `0` to disable). |
+/// | `MENTISDB_DASHBOARD_PIN` | *(none)* | Optional PIN that protects dashboard access. |
+///
+/// ## Examples
+///
+/// ### Loading from the environment (typical daemon startup)
 ///
 /// ```rust,no_run
 /// use mentisdb::server::MentisDbServerConfig;
 ///
+/// // Reads all MENTISDB_* env vars; applies defaults for anything missing.
 /// let config = MentisDbServerConfig::from_env();
 /// assert!(config.mcp_addr.port() > 0);
+/// assert!(config.rest_addr.port() > 0);
 /// ```
-/// Configuration for the `mentisdbd` daemon's HTTP and HTTPS servers.
 ///
-/// Built from environment variables via [`MentisDbServerConfig::from_env`].
+/// ### Customising individual fields after `from_env`
+///
+/// ```rust,no_run
+/// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+/// use mentisdb::server::MentisDbServerConfig;
+///
+/// let mut config = MentisDbServerConfig::from_env();
+///
+/// // Bind to all interfaces (e.g. inside a container)
+/// let host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+/// config.mcp_addr  = SocketAddr::new(host, config.mcp_addr.port());
+/// config.rest_addr = SocketAddr::new(host, config.rest_addr.port());
+///
+/// // Disable HTTPS servers
+/// config.https_mcp_addr  = None;
+/// config.https_rest_addr = None;
+///
+/// // Require a PIN for the dashboard
+/// config.dashboard_pin = Some("1234".to_string());
+/// ```
 #[derive(Debug, Clone)]
 pub struct MentisDbServerConfig {
-    /// Shared storage configuration for both HTTP servers.
+    /// Shared storage and behaviour configuration used by every server variant.
+    ///
+    /// This is constructed from `MENTISDB_DIR`, `MENTISDB_DEFAULT_KEY`,
+    /// `MENTISDB_DEFAULT_STORAGE_ADAPTER`, `MENTISDB_VERBOSE`,
+    /// `MENTISDB_LOG_FILE`, and `MENTISDB_AUTO_FLUSH`.
     pub service: MentisDbServiceConfig,
-    /// Socket address to bind the HTTP MCP server to.
+    /// Socket address for the plain-HTTP MCP server.
+    ///
+    /// Defaults to `127.0.0.1:9471`. Override with `MENTISDB_BIND_HOST` and
+    /// `MENTISDB_MCP_PORT`.
     pub mcp_addr: SocketAddr,
-    /// Socket address to bind the HTTP REST server to.
+    /// Socket address for the plain-HTTP REST server.
+    ///
+    /// Defaults to `127.0.0.1:9472`. Override with `MENTISDB_BIND_HOST` and
+    /// `MENTISDB_REST_PORT`.
     pub rest_addr: SocketAddr,
-    /// Socket address to bind the HTTPS MCP server to, or `None` if disabled (port 0).
+    /// Socket address for the HTTPS MCP server, or `None` if disabled.
+    ///
+    /// Defaults to `Some(127.0.0.1:9473)`. Set `MENTISDB_HTTPS_MCP_PORT=0`
+    /// (or assign `None` programmatically) to disable the HTTPS MCP server.
     pub https_mcp_addr: Option<SocketAddr>,
-    /// Socket address to bind the HTTPS REST server to, or `None` if disabled (port 0).
+    /// Socket address for the HTTPS REST server, or `None` if disabled.
+    ///
+    /// Defaults to `Some(127.0.0.1:9474)`. Set `MENTISDB_HTTPS_REST_PORT=0`
+    /// (or assign `None` programmatically) to disable the HTTPS REST server.
     pub https_rest_addr: Option<SocketAddr>,
-    /// Path to the TLS certificate PEM file.
+    /// Path to the TLS certificate PEM file used by both HTTPS servers and the
+    /// dashboard.
+    ///
+    /// Defaults to `<MENTISDB_DIR>/tls/cert.pem`. Override with
+    /// `MENTISDB_TLS_CERT`. If the file does not exist at daemon startup,
+    /// [`start_servers`] generates a self-signed certificate via `rcgen` and
+    /// writes both files automatically.
     pub tls_cert_path: PathBuf,
-    /// Path to the TLS private key PEM file.
+    /// Path to the TLS private-key PEM file used alongside [`tls_cert_path`](Self::tls_cert_path).
+    ///
+    /// Defaults to `<MENTISDB_DIR>/tls/key.pem`. Override with
+    /// `MENTISDB_TLS_KEY`.
     pub tls_key_path: PathBuf,
-    /// Socket address for the web dashboard, or `None` if disabled (port 0).
+    /// Socket address for the HTTPS web dashboard, or `None` if disabled.
+    ///
+    /// The dashboard is always served over TLS so browsers do not show
+    /// insecure-connection warnings. Defaults to `Some(127.0.0.1:9475)`. Set
+    /// `MENTISDB_DASHBOARD_PORT=0` to disable it.
     pub dashboard_addr: Option<SocketAddr>,
-    /// Optional PIN to protect the dashboard. `None` = open access.
+    /// Optional PIN that must be provided to access the web dashboard.
+    ///
+    /// When `None` (the default), the dashboard is open to any client that can
+    /// reach its port. Set `MENTISDB_DASHBOARD_PIN` to require a PIN. An empty
+    /// string is treated as absent (no PIN).
     pub dashboard_pin: Option<String>,
 }
 
 impl MentisDbServerConfig {
-    /// Build a server configuration from environment variables.
+    /// Build a [`MentisDbServerConfig`] by reading `MENTISDB_*` environment
+    /// variables and applying safe defaults for any that are absent.
+    ///
+    /// This is the canonical entry-point for the `mentisdbd` binary. Library
+    /// consumers that need finer control can call this and then override
+    /// individual fields before passing the config to [`start_servers`].
+    ///
+    /// See the [type-level documentation](MentisDbServerConfig) for a complete
+    /// table of every recognised environment variable and its default value.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use mentisdb::server::MentisDbServerConfig;
+    ///
+    /// // Load defaults; all ports will be their standard values when no
+    /// // MENTISDB_* variables are set in the current environment.
+    /// let config = MentisDbServerConfig::from_env();
+    /// assert_eq!(config.mcp_addr.port(), 9471);
+    /// assert_eq!(config.rest_addr.port(), 9472);
+    /// assert!(config.https_mcp_addr.is_some());
+    /// assert!(config.https_rest_addr.is_some());
+    /// assert!(config.dashboard_addr.is_some());
+    /// ```
     pub fn from_env() -> Self {
         let bind_host = env_var(&["MENTISDB_BIND_HOST"])
             .ok()
@@ -335,18 +619,41 @@ impl MentisDbServerConfig {
     }
 }
 
-/// Handle to a running HTTP server.
+/// A handle to a running HTTP (or HTTPS) server spawned by MentisDB.
 ///
-/// # Example
+/// A `ServerHandle` is returned by every `start_*_server` function. It lets
+/// callers inspect the bound address (useful when port `0` was requested, so
+/// the OS chose a free port) and request a graceful shutdown.
+///
+/// Once [`shutdown`](Self::shutdown) is called the server stops accepting new
+/// connections and drains any in-flight requests before the background task
+/// exits. Calling `shutdown` a second time is a no-op.
+///
+/// # Graceful-shutdown pattern
 ///
 /// ```rust,no_run
-/// use std::net::SocketAddr;
-/// use mentisdb::server::ServerHandle;
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{start_mcp_server, MentisDbServiceConfig};
 ///
-/// let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-/// let (tx, _rx) = tokio::sync::oneshot::channel();
-/// let handle = ServerHandle::new(addr, tx);
-/// assert_eq!(handle.local_addr(), addr);
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// let config = MentisDbServiceConfig::new(
+///     PathBuf::from("/tmp/mentisdb"),
+///     "agent-brain",
+///     StorageAdapterKind::Binary,
+/// );
+///
+/// // Port 0 → OS picks a free port.
+/// let mut handle = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
+/// println!("MCP listening on {}", handle.local_addr());
+///
+/// // … do work …
+///
+/// // Signal the server to stop accepting new connections and drain in-flight ones.
+/// handle.shutdown()?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct ServerHandle {
@@ -355,7 +662,24 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
-    /// Create a new server handle.
+    /// Create a new `ServerHandle` wrapping `addr` and a oneshot shutdown sender.
+    ///
+    /// This constructor is intended for use inside MentisDB server startup
+    /// functions. Library consumers typically receive handles from
+    /// [`start_mcp_server`], [`start_rest_server`], or [`start_servers`] rather
+    /// than constructing them directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::net::SocketAddr;
+    /// use mentisdb::server::ServerHandle;
+    ///
+    /// let addr = SocketAddr::from(([127, 0, 0, 1], 9471));
+    /// let (tx, _rx) = tokio::sync::oneshot::channel();
+    /// let handle = ServerHandle::new(addr, tx);
+    /// assert_eq!(handle.local_addr(), addr);
+    /// ```
     pub fn new(addr: SocketAddr, shutdown_tx: oneshot::Sender<()>) -> Self {
         Self {
             addr,
@@ -363,12 +687,24 @@ impl ServerHandle {
         }
     }
 
-    /// Return the bound socket address.
+    /// Return the socket address that this server is bound to.
+    ///
+    /// When port `0` was used at startup, this returns the OS-assigned port,
+    /// making it the correct way to discover the actual listening port in tests
+    /// and in-process embeddings.
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
     }
 
-    /// Request graceful shutdown of the server.
+    /// Send a graceful-shutdown signal to the running server.
+    ///
+    /// This consumes the internal oneshot sender, so calling `shutdown` a
+    /// second time is a no-op that returns `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shutdown signal cannot be delivered because the
+    /// server background task has already exited.
     pub fn shutdown(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Some(tx) = self.shutdown_tx.take() {
             tx.send(())
@@ -379,7 +715,18 @@ impl ServerHandle {
     }
 }
 
-/// Handles for a running MentisDb MCP and REST server pair (HTTP and optionally HTTPS).
+/// Handles for every server process started by [`start_servers`].
+///
+/// Each field holds a [`ServerHandle`] for a running server, or `None` when
+/// the corresponding server was disabled (e.g. by setting the relevant port to
+/// `0` or by setting the `Option` addr field to `None` on
+/// [`MentisDbServerConfig`]).
+///
+/// Use this struct to:
+/// - Discover the actual bound ports after startup (important when port `0`
+///   was requested).
+/// - Shut individual servers down gracefully.
+/// - Check at runtime which optional servers are active.
 ///
 /// # Example
 ///
@@ -389,37 +736,73 @@ impl ServerHandle {
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// let config = MentisDbServerConfig::from_env();
-/// let handles = start_servers(config).await?;
-/// println!("MCP: {}", handles.mcp.local_addr());
-/// println!("REST: {}", handles.rest.local_addr());
+/// let mut handles = start_servers(config).await?;
+///
+/// println!("HTTP  MCP  → {}", handles.mcp.local_addr());
+/// println!("HTTP  REST → {}", handles.rest.local_addr());
+///
+/// if let Some(ref h) = handles.https_mcp {
+///     println!("HTTPS MCP  → {}", h.local_addr());
+/// }
+/// if let Some(ref h) = handles.https_rest {
+///     println!("HTTPS REST → {}", h.local_addr());
+/// }
+/// if let Some(ref h) = handles.dashboard {
+///     println!("Dashboard  → https://{}", h.local_addr());
+/// }
+///
+/// // Graceful shutdown of every active server:
+/// handles.mcp.shutdown()?;
+/// handles.rest.shutdown()?;
+/// if let Some(ref mut h) = handles.https_mcp  { let _ = h.shutdown(); }
+/// if let Some(ref mut h) = handles.https_rest { let _ = h.shutdown(); }
+/// if let Some(ref mut h) = handles.dashboard  { let _ = h.shutdown(); }
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct MentisDbServerHandles {
-    /// Running HTTP MCP server handle.
+    /// Handle for the plain-HTTP MCP server. Always present.
     pub mcp: ServerHandle,
-    /// Running HTTP REST server handle.
+    /// Handle for the plain-HTTP REST server. Always present.
     pub rest: ServerHandle,
-    /// Running HTTPS MCP server handle, if HTTPS is enabled.
+    /// Handle for the HTTPS MCP server, or `None` when
+    /// [`MentisDbServerConfig::https_mcp_addr`] was `None` (i.e.
+    /// `MENTISDB_HTTPS_MCP_PORT=0`).
     pub https_mcp: Option<ServerHandle>,
-    /// Running HTTPS REST server handle, if HTTPS is enabled.
+    /// Handle for the HTTPS REST server, or `None` when
+    /// [`MentisDbServerConfig::https_rest_addr`] was `None` (i.e.
+    /// `MENTISDB_HTTPS_REST_PORT=0`).
     pub https_rest: Option<ServerHandle>,
-    /// Running web dashboard handle, if the dashboard is enabled.
+    /// Handle for the HTTPS web dashboard, or `None` when
+    /// [`MentisDbServerConfig::dashboard_addr`] was `None` (i.e.
+    /// `MENTISDB_DASHBOARD_PORT=0`).
     pub dashboard: Option<ServerHandle>,
 }
 
-/// Return the default on-disk MentisDB directory.
+/// Resolve the default on-disk MentisDB storage directory using the following
+/// priority chain:
 ///
-/// The default is `$HOME/.cloudllm/mentisdb` when `HOME` is available,
-/// otherwise `./.cloudllm/mentisdb`.
+/// 1. **`MENTISDB_DIR` environment variable** — if set and non-empty, this
+///    path is used as-is (no further resolution is performed).
+/// 2. **`$HOME/.cloudllm/mentisdb`** — when the `HOME` environment variable
+///    is available (typical on Linux and macOS).
+/// 3. **`./.cloudllm/mentisdb`** (relative to the current working directory)
+///    — final fallback when `HOME` cannot be determined (e.g. inside certain
+///    container or CI environments).
 ///
-/// # Example
+/// This function is called by [`MentisDbServerConfig::from_env`] to populate
+/// `service.chain_dir` when `MENTISDB_DIR` is not set, and by
+/// [`adopt_legacy_default_mentisdb_dir`] during daemon startup to locate the
+/// legacy ThoughtChain storage root.
+///
+/// # Examples
 ///
 /// ```
 /// use mentisdb::server::default_mentisdb_dir;
 ///
 /// let dir = default_mentisdb_dir();
+/// // The path always ends with "mentisdb" regardless of the platform.
 /// assert!(dir.ends_with("mentisdb"));
 /// ```
 pub fn default_mentisdb_dir() -> PathBuf {
@@ -441,24 +824,81 @@ fn default_tls_dir() -> PathBuf {
     default_mentisdb_dir().join("tls")
 }
 
-/// Report returned when legacy default MentisDB storage is adopted into the
-/// MentisDB default location.
+/// A report of what was moved during a legacy ThoughtChain → MentisDB storage
+/// migration performed by [`adopt_legacy_default_mentisdb_dir`].
+///
+/// Inspect this struct to present a helpful startup message to users who are
+/// upgrading from an older CloudLLM installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyDefaultStorageMigration {
-    /// Legacy storage root that was discovered.
+    /// The legacy `~/.cloudllm/thoughtchain/` directory that was discovered and
+    /// migrated.
     pub source_dir: PathBuf,
-    /// MentisDB storage root that should be used going forward.
+    /// The `~/.cloudllm/mentisdb/` directory that should be used going forward.
     pub target_dir: PathBuf,
-    /// Whether the whole legacy root could be renamed directly.
+    /// `true` when the entire legacy directory was renamed atomically in a
+    /// single `fs::rename` call (fast path, target did not pre-exist).
+    /// `false` when individual entries were merged into an existing target.
     pub renamed_root_dir: bool,
-    /// Number of entries merged into an already-existing target directory.
+    /// The number of files and directories moved from `source_dir` to
+    /// `target_dir` when a merge was necessary (`renamed_root_dir == false`).
     pub merged_entries: usize,
-    /// Whether the legacy `thoughtchain-registry.json` file was renamed.
+    /// `true` when `thoughtchain-registry.json` was renamed to
+    /// `mentisdb-registry.json` inside `target_dir`.
     pub renamed_registry_file: bool,
 }
 
-/// Adopt the legacy default ThoughtChain storage root into the MentisDB
-/// default location before chain-level migrations run.
+/// Migrate the legacy ThoughtChain storage root into the MentisDB default
+/// directory at daemon startup.
+///
+/// Early versions of CloudLLM stored agent memory under
+/// `~/.cloudllm/thoughtchain/`. MentisDB 0.4+ uses `~/.cloudllm/mentisdb/`.
+/// This function is called once per daemon startup (before any chain-level
+/// migrations) to transparently move existing data into the new location.
+///
+/// ## Migration logic
+///
+/// 1. If `~/.cloudllm/thoughtchain/` does **not** exist, return `Ok(None)` —
+///    nothing to migrate.
+/// 2. If `~/.cloudllm/mentisdb/` does **not** yet exist, rename the entire
+///    legacy directory in one atomic `fs::rename` call.
+/// 3. If `~/.cloudllm/mentisdb/` **already** exists (a partial migration or
+///    new installation), move individual entries from the legacy directory into
+///    the target, skipping any that would overwrite existing files.
+/// 4. Rename `thoughtchain-registry.json` → `mentisdb-registry.json` inside
+///    the target if the legacy registry filename is present and the new name is
+///    not yet taken.
+///
+/// ## Return value
+///
+/// Returns `Ok(Some(migration))` with a [`LegacyDefaultStorageMigration`]
+/// describing what was moved, or `Ok(None)` if no legacy directory was found.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if any filesystem operation (create, rename, read)
+/// fails.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use mentisdb::server::adopt_legacy_default_mentisdb_dir;
+///
+/// match adopt_legacy_default_mentisdb_dir().unwrap() {
+///     None => println!("No legacy storage found — nothing to migrate."),
+///     Some(m) => {
+///         println!("Migrated from {:?} → {:?}", m.source_dir, m.target_dir);
+///         if m.renamed_root_dir {
+///             println!("Renamed root directory in one step.");
+///         } else {
+///             println!("Merged {} entries.", m.merged_entries);
+///         }
+///         if m.renamed_registry_file {
+///             println!("Renamed thoughtchain-registry.json → mentisdb-registry.json");
+///         }
+///     }
+/// }
+/// ```
 pub fn adopt_legacy_default_mentisdb_dir() -> io::Result<Option<LegacyDefaultStorageMigration>> {
     let mentisdb_dir = default_mentisdb_dir();
     let Some(cloudllm_dir) = mentisdb_dir.parent() else {
@@ -618,7 +1058,73 @@ pub async fn start_rest_server(
     start_router(addr, rest_router(config)).await
 }
 
-/// Start a standalone MentisDb MCP server over HTTPS/TLS.
+/// Start a standalone MentisDB MCP server over HTTPS/TLS.
+///
+/// This is the TLS-enabled counterpart to [`start_mcp_server`]. It exposes
+/// both the modern streamable-HTTP MCP endpoint (`POST /`) and the legacy
+/// CloudLLM-compatible endpoints (`POST /tools/list`, `POST /tools/execute`)
+/// over an encrypted connection.
+///
+/// ## TLS certificates
+///
+/// Supply paths to PEM-encoded certificate and private-key files via
+/// `cert_path` and `key_path`. If the files do not yet exist you can generate
+/// a self-signed certificate with `rcgen` and write the resulting PEM files
+/// before calling this function:
+///
+/// ```rust,no_run
+/// use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType, date_time_ymd};
+/// use std::path::PathBuf;
+///
+/// let key_pair = KeyPair::generate().unwrap();
+/// let mut params = CertificateParams::default();
+/// let mut dn = DistinguishedName::new();
+/// dn.push(DnType::CommonName, "My MentisDB Node");
+/// params.distinguished_name = dn;
+/// params.subject_alt_names = vec![
+///     SanType::DnsName("localhost".try_into().unwrap()),
+/// ];
+/// params.not_before = date_time_ymd(2025, 1, 1);
+/// params.not_after  = date_time_ymd(2027, 1, 1);
+/// let cert = params.self_signed(&key_pair).unwrap();
+///
+/// let cert_path = PathBuf::from("/tmp/mentisdb/tls/cert.pem");
+/// let key_path  = PathBuf::from("/tmp/mentisdb/tls/key.pem");
+/// std::fs::create_dir_all("/tmp/mentisdb/tls").unwrap();
+/// std::fs::write(&cert_path, cert.pem()).unwrap();
+/// std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+/// ```
+///
+/// When using [`start_servers`] or [`MentisDbServerConfig`], self-signed cert
+/// generation is performed automatically by `ensure_tls_cert` if the configured
+/// paths do not exist.
+///
+/// ## Example
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{start_https_mcp_server, MentisDbServiceConfig};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// let config = MentisDbServiceConfig::new(
+///     PathBuf::from("/tmp/mentisdb"),
+///     "agent-brain",
+///     StorageAdapterKind::Binary,
+/// );
+///
+/// let handle = start_https_mcp_server(
+///     SocketAddr::from(([127, 0, 0, 1], 9473)),
+///     config,
+///     PathBuf::from("/tmp/mentisdb/tls/cert.pem"),
+///     PathBuf::from("/tmp/mentisdb/tls/key.pem"),
+/// )
+/// .await?;
+/// println!("HTTPS MCP listening on {}", handle.local_addr());
+/// # Ok(())
+/// # }
+/// ```
 pub async fn start_https_mcp_server(
     addr: SocketAddr,
     config: MentisDbServiceConfig,
@@ -635,7 +1141,47 @@ pub async fn start_https_mcp_server(
     .await
 }
 
-/// Start a standalone MentisDb REST server over HTTPS/TLS.
+/// Start a standalone MentisDB REST server over HTTPS/TLS.
+///
+/// This is the TLS-enabled counterpart to [`start_rest_server`]. It exposes
+/// the full REST surface (all `/v1/*` endpoints, `/health`, and
+/// `/mentisdb_skill_md`) over an encrypted connection.
+///
+/// ## TLS certificates
+///
+/// Supply paths to PEM-encoded certificate and private-key files via
+/// `cert_path` and `key_path`. Both files must exist at the time of the call;
+/// use `rcgen` to generate a self-signed certificate if needed (see the
+/// [`start_https_mcp_server`] documentation for a complete example) or rely on
+/// [`start_servers`] / [`MentisDbServerConfig`] which auto-generate
+/// self-signed certs when the configured paths are absent.
+///
+/// ## Example
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{start_https_rest_server, MentisDbServiceConfig};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// let config = MentisDbServiceConfig::new(
+///     PathBuf::from("/tmp/mentisdb"),
+///     "agent-brain",
+///     StorageAdapterKind::Binary,
+/// );
+///
+/// let handle = start_https_rest_server(
+///     SocketAddr::from(([127, 0, 0, 1], 9474)),
+///     config,
+///     PathBuf::from("/tmp/mentisdb/tls/cert.pem"),
+///     PathBuf::from("/tmp/mentisdb/tls/key.pem"),
+/// )
+/// .await?;
+/// println!("HTTPS REST listening on {}", handle.local_addr());
+/// # Ok(())
+/// # }
+/// ```
 pub async fn start_https_rest_server(
     addr: SocketAddr,
     config: MentisDbServiceConfig,
@@ -645,7 +1191,50 @@ pub async fn start_https_rest_server(
     start_tls_router(addr, rest_router(config), cert_path, key_path).await
 }
 
-/// Start both the MCP and REST servers for `mentisdbd`.
+/// Start all servers described by a [`MentisDbServerConfig`] and return
+/// handles for each running server.
+///
+/// This is the top-level entry point for the `mentisdbd` daemon. It:
+///
+/// 1. Generates a self-signed TLS certificate (via `rcgen`) if the cert/key
+///    files do not yet exist and at least one HTTPS server or the dashboard is
+///    enabled.
+/// 2. Starts the plain-HTTP MCP server on `config.mcp_addr`.
+/// 3. Starts the plain-HTTP REST server on `config.rest_addr`.
+/// 4. Optionally starts the HTTPS MCP server on `config.https_mcp_addr`.
+/// 5. Optionally starts the HTTPS REST server on `config.https_rest_addr`.
+/// 6. Optionally starts the HTTPS web dashboard on `config.dashboard_addr`.
+///
+/// The HTTP and HTTPS MCP servers expose both the modern streamable-HTTP MCP
+/// endpoint (`POST /`) and the legacy CloudLLM-compatible endpoints
+/// (`POST /tools/list`, `POST /tools/execute`).
+///
+/// The REST service is shared between the plain-HTTP REST server and the
+/// dashboard so that they operate on the same in-memory chain map.
+///
+/// # Errors
+///
+/// Returns an error if TLS cert generation fails, any server fails to bind its
+/// socket, or TLS configuration cannot be loaded.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use mentisdb::server::{start_servers, MentisDbServerConfig};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// let config = MentisDbServerConfig::from_env();
+/// let handles = start_servers(config).await?;
+///
+/// println!("HTTP  MCP  → {}", handles.mcp.local_addr());
+/// println!("HTTP  REST → {}", handles.rest.local_addr());
+/// if let Some(ref h) = handles.https_mcp  { println!("HTTPS MCP  → {}", h.local_addr()); }
+/// if let Some(ref h) = handles.https_rest { println!("HTTPS REST → {}", h.local_addr()); }
+/// if let Some(ref h) = handles.dashboard  { println!("Dashboard  → https://{}", h.local_addr()); }
+/// # Ok(())
+/// # }
+/// ```
 pub async fn start_servers(
     config: MentisDbServerConfig,
 ) -> Result<MentisDbServerHandles, Box<dyn Error + Send + Sync>> {
@@ -798,10 +1387,55 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         .with_state(service)
 }
 
-/// Build the MCP router without binding a socket.
+/// Build the legacy CloudLLM-compatible MCP router without binding a socket.
 ///
-/// This is useful for embedding the service inside another process or testing
-/// the HTTP contract in-process.
+/// This router exposes the two legacy endpoints used by CloudLLM-era tool
+/// integrations:
+/// - `GET /health` — liveness probe.
+/// - `POST /tools/list` — enumerate available MentisDB tools.
+/// - `POST /tools/execute` — dispatch a named tool call.
+///
+/// It does **not** expose the modern streamable-HTTP MCP root endpoint (`POST /`).
+/// Use [`standard_mcp_router`] for that, or call [`start_mcp_server`] which
+/// runs *both* legacy and standard endpoints simultaneously.
+///
+/// ## When to use this
+///
+/// * You are embedding MentisDB into an existing Axum service that already
+///   uses the modern MCP protocol and you only need the legacy `tools/`
+///   surface for backward compatibility.
+/// * You want to unit-test the legacy MCP contract in-process with
+///   `axum::Router`'s `oneshot` helper.
+///
+/// For new integrations prefer [`standard_mcp_router`] or [`start_mcp_server`].
+///
+/// # Examples
+///
+/// ## Embedding in an Axum application
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use axum::{routing::get, Router};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{MentisDbServiceConfig, mcp_router};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let config = MentisDbServiceConfig::new(
+///         PathBuf::from("/var/lib/mentisdb"),
+///         "my-agent-brain",
+///         StorageAdapterKind::Binary,
+///     );
+///
+///     // Mount the MentisDB MCP router under /mcp and add your own routes.
+///     let app = Router::new()
+///         .nest("/mcp", mcp_router(config))
+///         .route("/", get(|| async { "My app" }));
+///
+///     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await.unwrap();
+///     axum::serve(listener, app).await.unwrap();
+/// }
+/// ```
 pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
     let service = Arc::new(MentisDbService::new(config));
     Router::new()
@@ -811,10 +1445,60 @@ pub fn mcp_router(config: MentisDbServiceConfig) -> Router {
         .with_state(service)
 }
 
-/// Build a standard streamable HTTP MCP router without binding a socket.
+/// Build the standard streamable-HTTP MCP router without binding a socket.
 ///
-/// This exposes the modern MCP root endpoint used by remote MCP clients such as
-/// Codex and Claude Code. It is primarily useful for testing and embedding.
+/// This router exposes the modern MCP root endpoint (`POST /`) as defined by
+/// the MCP streamable-HTTP specification. It is the surface used by
+/// remote-capable MCP clients such as **Codex** and **Claude Code** when they
+/// connect to a running `mentisdbd` instance.
+///
+/// The router also adds:
+/// - `GET /health` — liveness probe.
+///
+/// ## Difference from [`mcp_router`]
+///
+/// | Router | Endpoint | Client compatibility |
+/// |--------|----------|---------------------|
+/// | [`mcp_router`] | `POST /tools/list`, `POST /tools/execute` | Legacy CloudLLM clients |
+/// | [`standard_mcp_router`] | `POST /` (streamable HTTP) | Modern MCP clients (Codex, Claude Code) |
+/// | [`start_mcp_server`] | Both of the above | All clients |
+///
+/// For production deployments that need to serve both client generations,
+/// use [`start_mcp_server`] (or `start_servers`) which merges both routers.
+///
+/// ## When to use this
+///
+/// * You are building a new integration that only needs to support modern MCP
+///   clients.
+/// * You want to test the streamable-HTTP MCP contract in-process.
+///
+/// # Examples
+///
+/// ## Embedding in an Axum application
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use axum::{routing::get, Router};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{MentisDbServiceConfig, standard_mcp_router};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let config = MentisDbServiceConfig::new(
+///         PathBuf::from("/var/lib/mentisdb"),
+///         "my-agent-brain",
+///         StorageAdapterKind::Binary,
+///     );
+///
+///     // The standard MCP router exposes POST / for streamable-HTTP MCP.
+///     let app = Router::new()
+///         .merge(standard_mcp_router(config))
+///         .route("/status", get(|| async { "ok" }));
+///
+///     let listener = tokio::net::TcpListener::bind("127.0.0.1:9471").await.unwrap();
+///     axum::serve(listener, app).await.unwrap();
+/// }
+/// ```
 pub fn standard_mcp_router(config: MentisDbServiceConfig) -> Router {
     let service = Arc::new(MentisDbService::new(config));
     standard_mcp_only_router(service, SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -822,8 +1506,60 @@ pub fn standard_mcp_router(config: MentisDbServiceConfig) -> Router {
 
 /// Build the REST router without binding a socket.
 ///
-/// This is useful for embedding the service inside another process or testing
-/// the HTTP contract in-process.
+/// The REST router exposes every MentisDB operation as a plain JSON HTTP
+/// endpoint. This is the surface consumed by the MentisDB MCP server tools
+/// (which proxy REST calls under the hood), by the web dashboard, and by any
+/// HTTP client that prefers REST over the MCP protocol.
+///
+/// Endpoints exposed:
+/// - `GET /health`
+/// - `GET /mentisdb_skill_md`
+/// - `GET /v1/chains`
+/// - `GET /v1/skills` · `GET /v1/skills/manifest`
+/// - `POST /v1/bootstrap`
+/// - `POST /v1/thoughts` · `POST /v1/retrospectives`
+/// - `POST /v1/search` · `POST /v1/recent-context` · `POST /v1/memory-markdown`
+/// - `POST /v1/thought` · `POST /v1/thoughts/genesis` · `POST /v1/thoughts/traverse`
+/// - `POST /v1/head`
+/// - `POST /v1/agents` · `POST /v1/agent` · `POST /v1/agent-registry`
+/// - `POST /v1/agents/upsert` · `POST /v1/agents/description` · `POST /v1/agents/aliases`
+/// - `POST /v1/agents/keys` · `POST /v1/agents/keys/revoke` · `POST /v1/agents/disable`
+/// - `POST /v1/skills/upload` · `POST /v1/skills/search` · `POST /v1/skills/read`
+/// - `POST /v1/skills/versions` · `POST /v1/skills/deprecate` · `POST /v1/skills/revoke`
+///
+/// ## When to use this
+///
+/// Use `rest_router` when you want to embed the full REST surface inside an
+/// existing Axum application. For a standalone server, use [`start_rest_server`]
+/// instead, which handles binding and returns a [`ServerHandle`].
+///
+/// # Examples
+///
+/// ## Mounting alongside custom routes
+///
+/// ```rust,no_run
+/// use std::{net::SocketAddr, path::PathBuf};
+/// use axum::{routing::get, Router, Json};
+/// use mentisdb::StorageAdapterKind;
+/// use mentisdb::server::{MentisDbServiceConfig, rest_router};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let config = MentisDbServiceConfig::new(
+///         PathBuf::from("/var/lib/mentisdb"),
+///         "my-agent-brain",
+///         StorageAdapterKind::Binary,
+///     );
+///
+///     // Merge MentisDB REST routes with your own application routes.
+///     let app = Router::new()
+///         .merge(rest_router(config))
+///         .route("/my-app/status", get(|| async { "alive" }));
+///
+///     let listener = tokio::net::TcpListener::bind("127.0.0.1:9472").await.unwrap();
+///     axum::serve(listener, app).await.unwrap();
+/// }
+/// ```
 pub fn rest_router(config: MentisDbServiceConfig) -> Router {
     let service = Arc::new(MentisDbService::new(config));
     Router::new()
@@ -2012,15 +2748,19 @@ impl MentisDbService {
             .clone()
             .unwrap_or_else(|| "<skills>".to_string());
         let format = parse_skill_format(request.format.as_deref())?;
-        let registry = self.skills.read().await;
-        let skill = registry.skill_summary(&request.skill_id)?;
-        let version = registry.skill_version(&request.skill_id, request.version_id)?;
-        let content = registry.read_skill(&request.skill_id, Some(version.version_id), format)?;
-        // Derive schema_version from the reconstructed document (version.document no longer stored).
-        let schema_version = registry
-            .skill_document(&request.skill_id, Some(version.version_id))
-            .map(|doc| doc.schema_version)
-            .unwrap_or(MENTISDB_SKILL_CURRENT_SCHEMA_VERSION);
+        let (skill, entry) = {
+            let registry = self.skills.read().await;
+            (
+                registry.skill_summary(&request.skill_id)?,
+                registry.cloned_entry(&request.skill_id)?,
+            )
+        };
+        let snapshot = crate::skills::read_skill_from_entry(
+            &request.skill_id,
+            &entry,
+            request.version_id,
+            format,
+        )?;
         self.log_interaction(InteractionLogEntry {
             access: "read",
             operation: "read_skill",
@@ -2029,16 +2769,16 @@ impl MentisDbService {
             result_count: Some(1),
             note: Some(format!(
                 "skill_id={} version_id={} format={}",
-                request.skill_id, version.version_id, format
+                request.skill_id, snapshot.version.version_id, format
             )),
         });
         Ok(ReadSkillResponse {
             skill_id: request.skill_id,
-            version_id: version.version_id,
+            version_id: snapshot.version.version_id,
             format,
-            source_format: version.source_format,
-            schema_version,
-            content,
+            source_format: snapshot.version.source_format,
+            schema_version: snapshot.schema_version,
+            content: snapshot.content,
             status: skill.status,
             safety_warnings: skill_read_warnings(&skill),
         })
@@ -2749,19 +3489,32 @@ async fn start_router(
     Ok(ServerHandle::new(local_addr, shutdown_tx))
 }
 
-/// Generate a self-signed TLS certificate if the cert and key files do not yet exist.
+/// Generate a self-signed TLS certificate and private key if the PEM files do
+/// not yet exist, then return without doing anything if they already do.
 ///
-/// The certificate includes the following Subject Alternative Names:
-/// - `my.mentisdb.com` (DNS)
-/// - `localhost` (DNS)
-/// - `127.0.0.1` (IP)
+/// This is called by [`start_servers`] before any HTTPS or dashboard server
+/// is started. It uses the [`rcgen`] crate to produce an ECDSA self-signed
+/// certificate in PEM format.
 ///
-/// The cert is valid from 2025-01-01 to 2027-01-01. Both PEM files are written
-/// to the parent directory of `cert_path` (created if missing).
+/// ## Certificate properties
+///
+/// | Property | Value |
+/// |---|---|
+/// | Common Name | `MentisDB Local` |
+/// | Subject Alternative Names | `my.mentisdb.com` (DNS), `localhost` (DNS), `127.0.0.1` (IP) |
+/// | Validity | 2025-01-01 → 2027-01-01 |
+///
+/// Both `cert_path` and `key_path` are written as PEM files. The parent
+/// directory of `cert_path` is created with `fs::create_dir_all` if it does
+/// not exist.
+///
+/// Override the default paths via `MENTISDB_TLS_CERT` / `MENTISDB_TLS_KEY`
+/// if you want to supply your own CA-signed or ACME certificate.
 ///
 /// # Errors
 ///
-/// Returns an error if key generation, certificate signing, or file I/O fails.
+/// Returns an error if key-pair generation, certificate self-signing, or any
+/// file-system operation (directory creation, file write) fails.
 fn ensure_tls_cert(cert_path: &Path, key_path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
     if cert_path.exists() && key_path.exists() {
         return Ok(());
@@ -2795,10 +3548,23 @@ fn ensure_tls_cert(cert_path: &Path, key_path: &Path) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-/// Bind a TLS (HTTPS) server to `addr`, serve `router`, and return a [`ServerHandle`].
+/// Bind a TLS-encrypted (HTTPS) TCP socket to `addr`, serve `router` with
+/// `rustls`, and return a [`ServerHandle`].
 ///
-/// Uses `axum-server` with `rustls` under the hood. The `cert_path` and `key_path`
-/// must point to valid PEM files (use [`ensure_tls_cert`] to generate them if missing).
+/// This is the shared implementation used by [`start_https_mcp_server`],
+/// [`start_https_rest_server`], and [`start_dashboard_server`]. It wraps
+/// `axum-server` with `rustls` under the hood and bridges the oneshot-based
+/// [`ServerHandle::shutdown`] signal into `axum_server`'s graceful-shutdown
+/// mechanism (5-second drain timeout).
+///
+/// Both PEM files (`cert_path`, `key_path`) must exist and be valid at call
+/// time. Use [`ensure_tls_cert`] (called automatically by [`start_servers`])
+/// to generate a self-signed certificate if the files are absent.
+///
+/// After spawning the server this function waits for the socket to reach the
+/// `LISTEN` state before returning, so the caller can immediately use
+/// `handle.local_addr()` to discover the actual port (important when `addr`
+/// uses port `0`).
 async fn start_tls_router(
     addr: SocketAddr,
     router: Router,
