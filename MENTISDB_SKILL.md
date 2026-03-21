@@ -104,6 +104,9 @@ Use the semantic type that matches the memory's job:
 - `Plan`: future work shape that is more committed than an idea
 - `Summary`: compressed state; often pair with role `Checkpoint`
 - `Question`: unresolved issue worth preserving
+- `Wonder`: aspirational engineering wish or desired future that is not yet committed enough for `Plan`; captures genuine uncertainty about direction
+- `TaskComplete`: write when a leaf task finishes to mark completion durably; prefer over `Summary` when the unit of work is a concrete deliverable rather than a status snapshot
+- `Mistake`: write when you (or the PM) made a wrong decision and want to flag it for the record; captures orchestration failures, wrong design choices, or costly misdirections — distinct from `Correction`, which replaces a wrong *fact*; `Mistake` records a wrong *action*
 
 ## Choosing Roles
 
@@ -149,6 +152,47 @@ Write with stable identity:
 - optional `agent_owner`
 
 Do not casually change producer identity. If prior identity was wrong, write a `Correction` that establishes the canonical identity.
+
+## Session Start Patterns
+
+Two distinct Summary patterns bookend every session. Both are important.
+
+### Bootstrap Memory (First-Ever Join)
+
+When an agent joins a chain for the first time, write a `Summary` thought that captures:
+
+- who the agent is (role, owner, project context)
+- the current project state as the agent understands it
+- active working standards or preferences
+- any team conventions the agent brings
+
+Tag it with `bootstrap` and `identity`. This becomes the agent's permanent entry point in the chain history.
+
+```text
+ThoughtType: Summary
+Role: Checkpoint
+Tags: ["bootstrap", "identity", "meatpuppets"]
+Concepts: ["agent-identity", "project-state"]
+Content: Bootstrap memory for [agent-name]. Role: [description]. Owner: [owner]. Active project: [project]. Key working standards: [list]. Starting state: [description].
+```
+
+Do this once. Every future re-entry uses the reload pattern below.
+
+### Session Reload Summary (Re-entry)
+
+At the start of every subsequent session, after calling `mentisdb_recent_context`, write a `Summary` that confirms what was loaded and captures the re-entry baseline:
+
+```text
+ThoughtType: Summary
+Role: Checkpoint
+Tags: ["context-reload", "next-session"]
+Concepts: ["session-resumption"]
+Content: [Agent] reloaded durable memory from borganism-brain. Read thoughts #N–#M. Active state: [what I know]. Current task: [what I'm doing]. Open questions: [any].
+```
+
+This is not redundant journaling — it is the durable record that another agent (or a future instance of you) can find and use to understand where this agent was in the timeline. The `context-reload` tag makes these trivially filterable.
+
+
 
 ## Retrieval Patterns
 
@@ -728,6 +772,18 @@ mentisdb_upsert_agent(
 )
 ```
 
+**Also pre-register every sub-agent before dispatching it.** If a sub-agent writes thoughts before you register it, those thoughts will appear under an unregistered identity. Pre-registration takes one call per agent and costs nothing:
+
+```
+mentisdb_upsert_agent(
+  agent_id="dashboard-rust-infra",
+  display_name="Dashboard Rust Infrastructure Agent",
+  description="Implements the Rust backend for feature X: ..."
+)
+```
+
+Do this in the same turn you dispatch the agent. Registered agents are searchable by display name and description in the agent registry, making fleet retrospectives cleaner.
+
 The PM writes `Summary`, `Decision`, `Constraint`, `Mistake`, and `Wonder` thoughts throughout the session. These are not just logs — they are the PM's persistent identity across sessions.
 
 ### Loading Agents With Fresh Context
@@ -935,6 +991,80 @@ mentisdb_append(
 
 The lesson should be written **before** returning the result summary, not left only in the return value. Return values are ephemeral; MentisDB thoughts are durable.
 
+### TaskComplete as the Definitive Final Act
+
+When a sub-agent finishes a concrete leaf task, write `TaskComplete` rather than `Summary` or `LessonLearned` alone. `TaskComplete` is a stronger, unambiguous signal — it means the thing is done, not just that progress was made.
+
+```text
+mentisdb_append(
+  agent_id="dashboard-frontend-html",
+  thought_type="TaskComplete",
+  content="Completed src/dashboard_static/index.html (1286 lines) and login.html (101 lines). Full SPA with hash router, 6 views, XSS-safe. cargo test: 32/32 pass.",
+  tags=["dashboard", "frontend", "complete"],
+  concepts=["task-completion"]
+)
+```
+
+Write any `LessonLearned` thoughts *before* `TaskComplete`. The `TaskComplete` thought closes the story; lessons that follow it are semantically after the fact.
+
+### Domain Knowledge Dumps as Insight
+
+When a specialist agent joins a session for the first time, one of the most valuable things it can do is write a single `Insight` thought that is a knowledge snapshot of its domain — the non-obvious rules, gotchas, and patterns it carries. This makes the specialist's expertise queryable by every other agent on the chain.
+
+```text
+ThoughtType: Insight
+Tags: ["leptos", "frontend", "domain-knowledge"]
+Concepts: ["leptos-gotchas", "wasm-build"]
+Content: Leptos 0.7 gotchas: use signal() NOT create_signal(); view! macro does NOT parse string literals as HTML — use raw HTML nodes for markup; gloo_timers::callback::Interval must be stored in a signal or it is dropped immediately; #[server] functions must be declared at crate root in lib.rs, not inside modules.
+```
+
+This is especially valuable for:
+- Framework-specific traps that appear in multiple projects
+- Lessons that cross project boundaries (e.g. Rust serialization rules, wallet signing patterns)
+- Knowledge that a general agent would take many steps to rediscover on its own
+
+Write the dump once. Update it with a new `Insight` or `Correction` when the knowledge changes.
+
+### Fleet Operating Protocols as Constraint Thoughts
+
+When you establish a protocol for how the fleet operates — context window rules, identity rules, commit discipline — write it as a `Constraint` thought, not just in a prompt or a README. A `Constraint` in MentisDB is durable, queryable, and enforced by attribution:
+
+```text
+ThoughtType: Constraint
+Tags: ["fleet", "context-window", "protocol"]
+Concepts: ["context-management", "fleet-discipline"]
+Content: Fleet Agent Context Window Protocol: when any agent's context window reaches ~50% capacity, it must: (1) flush a Summary checkpoint, (2) write pending lessons, (3) compact context, (4) reload via mentisdb_recent_context, (5) signal PM via context-checkpoint tag.
+```
+
+Every new agent in the fleet can now find this protocol by searching for `Constraint` thoughts with the `fleet` tag.
+
+### PM Mistake and Wonder Thoughts
+
+The PM has two important thought types beyond checkpoints and decisions:
+
+**`Mistake`** — use when the PM made a wrong orchestration decision, dispatched conflicting agents, or chose the wrong approach. Write it candidly:
+
+```text
+ThoughtType: Mistake
+Tags: ["orchestration", "parallel-agents"]
+Content: Dispatched two implementation agents to the same call site without agreeing on the final API signature first. One agent's work was wasted. Fix: define the agreed interface contract explicitly in both prompts before dispatching agents that touch the same code boundary.
+```
+
+`Mistake` is not self-flagellation — it is the PM's version of `LessonLearned`. Future PM instances (including you in the next session) will find it and avoid repeating it.
+
+**`Wonder`** — use for aspirational engineering ideas that are not yet committed enough for `Plan`. This is the PM's wishlist:
+
+```text
+ThoughtType: Wonder
+Tags: ["performance", "architecture", "future"]
+Concepts: ["write-throughput", "wal"]
+Content: I want a WAL + background flush actor for the append path. Current throughput is bounded by per-chain RwLock serialization under HTTP load. A write-ahead log with a dedicated flush thread would allow batched disk writes and unblock concurrent appends.
+```
+
+`Wonder` thoughts accumulate into a product roadmap that no one asked to formalize. Search `Wonder` when planning a new release cycle.
+
+
+
 ### Context Window Protocol
 
 When an agent's context window approaches 50% capacity:
@@ -968,10 +1098,13 @@ A well-maintained chain lets any new agent spin up, call `mentisdb_recent_contex
 - Loading all agents with identical context when diverse slices would be more valuable.
 - Leaving lessons in agent output summaries instead of writing them to MentisDB.
 - Not registering the PM as an agent — its thoughts become unattributable noise.
+- **Not pre-registering sub-agents** — their thoughts accumulate in the chain under an unregistered identity, making the Agent Registry misleading and retrospective attribution hard. Call `upsert_agent` for each sub-agent before (or in the same turn as) dispatch.
 - Waiting for all agents to finish before dispatching the next wave — dispatch as soon as dependencies clear.
 - Treating context window exhaustion as a hard stop rather than a checkpoint trigger.
 - Dispatching two agents to modify the **same call site** in the same file without agreeing on the final API signature first — one agent will leave its changes commented-out waiting for the other. Fix: define the agreed interface contract explicitly in both prompts before dispatching; instruct agents they may reference the agreed target API even if it doesn't compile yet.
+- **Assigning parallel agents overlapping file ownership** — when parallelizing implementation, structure tasks so each agent owns a distinct file or module. File isolation eliminates merge conflicts without coordination overhead. If two tasks must touch the same file, serialize them.
 - Pre-warming N agents with identical context and then giving them all the same task — this produces N redundant outputs. Pre-warm with identical context only when you plan to give each agent a **different** task.
+- **Closing a leaf task with only `Summary`** — `Summary` means "here is what I know now." `TaskComplete` means "the deliverable is done." Use `TaskComplete` for concrete finished work; `Summary` for state snapshots. Mixing them makes it hard to reconstruct the timeline of completed deliverables later.
 
 ### World-Class Release Checklist
 
@@ -1002,6 +1135,37 @@ The fleet improves itself when agents upload updated skill files after learning 
 - Writing a long summary where a correction or lesson would be sharper.
 - Treating MentisDB like a package registry or artifact store.
 - Letting important team rules live only in chat.
+- Leaving fleet protocols only in prompts — if a protocol governs how the fleet operates, write it as a `Constraint` thought so every future agent can find it by searching the chain.
+
+---
+
+## Writing Memories via REST API
+
+Agents with bash access to the daemon can write thoughts directly over HTTP without going through the MCP tool layer. This is useful for scripts, CI pipelines, or agents where tool overhead matters.
+
+```bash
+# Append a LessonLearned thought
+curl -s -X POST http://127.0.0.1:9472/v1/memories/append \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "dashboard-rust-infra",
+    "agent_name": "Dashboard Rust Infrastructure Agent",
+    "thought_type": "LessonLearned",
+    "content": "DashMap Ref must never be held across .await — clone the Arc<RwLock<T>> out of the entry first or the lock will deadlock under tokio.",
+    "tags": ["rust", "dashmap", "async", "axum"],
+    "concepts": ["lock-safety", "async-rust"]
+  }'
+
+# Search by thought type + tag
+curl -s "http://127.0.0.1:9472/v1/memories/search?text=dashmap&thought_types=LessonLearned"
+
+# Get recent context (last 15 thoughts)
+curl -s "http://127.0.0.1:9472/v1/memories/recent?last_n=15"
+```
+
+The REST port defaults to `9472` (`MENTISDB_REST_PORT`). The request and response shapes mirror the MCP tool parameters exactly — same field names, same JSON types.
+
+
 
 ## High-Leverage Tricks
 
