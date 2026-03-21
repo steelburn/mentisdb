@@ -777,14 +777,16 @@
             <div class="section-label">Chain: ${esc(ck)}</div>
             <div class="card" style="margin-bottom:20px">
               <div class="table-wrap"><table>
-                <thead><tr><th>Agent ID</th><th>Display Name</th><th>Status</th><th></th></tr></thead>
+                <thead><tr><th>Agent ID</th><th>Display Name</th><th>Owner</th><th>Thoughts</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   ${!agents.length
-                    ? '<tr><td colspan="4" class="empty-state">No agents in this chain.</td></tr>'
+                    ? '<tr><td colspan="6" class="empty-state">No agents in this chain.</td></tr>'
                     : agents.map(a => `
                       <tr>
                         <td class="mono" style="color:#58a6ff;font-size:0.83rem">${esc(a.agent_id)}</td>
                         <td>${esc(a.display_name || '—')}</td>
+                        <td>${esc(a.owner || '—')}</td>
+                        <td>${esc(String(a.thought_count ?? '—'))}</td>
                         <td>${statusBadge(a.status)}</td>
                         <td><a class="btn btn-secondary btn-sm" href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}">View</a></td>
                       </tr>
@@ -834,7 +836,7 @@
           </div>
           <div class="form-group">
             <label>Owner</label>
-            <input type="text" id="ad-owner" value="${esc(agent.agent_owner || '')}">
+            <input type="text" id="ad-owner" value="${esc(agent.owner || '')}">
           </div>
           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
             <button class="btn btn-primary btn-sm" id="ad-save">Save Changes</button>
