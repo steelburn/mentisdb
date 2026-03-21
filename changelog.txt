@@ -40,6 +40,17 @@
    - New public function that opens each registered chain, reads live `thought_count` and `agent_count`, and rewrites the registry JSON only when at least one entry has drifted
    - Called at daemon startup after chain migrations so any counts corrupted by the previous off-by-one bug (or by chains appended outside the daemon) are corrected on first boot
  - chore: Add `.env.example` documenting all supported environment variables with comments
+ - feat: Web dashboard — admin UI embedded in the mentisdbd binary
+   - Self-contained HTML/CSS/vanilla-JS single-page app served at `http://<host>:9475/dashboard`; no npm, no Node.js, zero new crate dependencies
+   - HTML/CSS/JS live as real tracked files in `src/dashboard_static/` and are compiled into the binary via `include_str!` — diffs and IDE tooling work normally
+   - Chain Manager: lists all chains with live thought/agent counts; click any chain to open the Thought Explorer
+   - Thought Explorer: paginated table (25/50/100 per page) with 28-ThoughtType grouped multi-select filter (All/Clear per colour group); coloured type badges; click any row to open a full-detail modal (all fields, refs as links, content in scrollable pre block)
+   - Agent Manager: agents grouped by chain; status badges; per-agent detail page with editable Display Name / Description / Owner fields, Revoke/Activate toggle, ed25519 public key add/revoke, and recent-thoughts preview
+   - Skills Registry: lists all skills with status and version count; per-skill view with Rendered / Source / Diff tabs; inline markdown renderer; version selector; coloured unified-diff viewer comparing any two versions
+   - PIN protection: set `MENTISDB_DASHBOARD_PIN` to gate all dashboard routes behind a login page; auth via `mentisdb_pin` cookie or `Authorization: Bearer <pin>` header; unset = open (suitable for localhost deployments)
+   - New env vars: `MENTISDB_DASHBOARD_PORT` (default 9475; 0 = disabled), `MENTISDB_DASHBOARD_PIN` (default unset)
+   - Dashboard URL printed in startup endpoint catalog; both env vars listed in Configuration block
+   - `src/server.rs`: `MentisDbService.{chains,skills}` made `pub(crate)`; `MentisDbServerConfig` + `MentisDbServerHandles` extended with dashboard fields; `start_dashboard_server()` added; dashboard shares the same live `Arc<DashMap>` chains and `Arc<RwLock<SkillRegistry>>` as the REST service
  - chore: Bump version to 0.5.0
 
 0.4.3.8 MAR/16/2026
