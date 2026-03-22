@@ -18,15 +18,18 @@ use uuid::Uuid;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Mirrors the binary layout written by the 0.5.1 (schema-V1) daemon.
+/// Field order must match the serialized Thought struct exactly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacyThoughtV0Record {
+    schema_version: u32,
     id: Uuid,
     index: u64,
     timestamp: chrono::DateTime<chrono::Utc>,
     session_id: Option<Uuid>,
     agent_id: String,
-    agent_name: String,
-    agent_owner: Option<String>,
+    signing_key_id: Option<String>,
+    thought_signature: Option<Vec<u8>>,
     thought_type: ThoughtType,
     role: ThoughtRole,
     content: String,
@@ -1312,13 +1315,14 @@ fn write_legacy_v0_chain(dir: &PathBuf, chain_key: &str, kind: StorageAdapterKin
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(chain_storage_filename(chain_key, kind));
     let legacy = LegacyThoughtV0Record {
+        schema_version: 1,
         id: Uuid::new_v4(),
         index: 0,
         timestamp: chrono::Utc::now(),
         session_id: None,
         agent_id: "legacy-agent".to_string(),
-        agent_name: "Legacy Agent".to_string(),
-        agent_owner: Some("legacy-team".to_string()),
+        signing_key_id: None,
+        thought_signature: None,
         thought_type: ThoughtType::Insight,
         role: ThoughtRole::Memory,
         content: "Legacy thought content".to_string(),
@@ -1460,8 +1464,7 @@ fn migrate_v0_jsonl_and_binary_chains_to_v1() {
         assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
         assert!(chain.thoughts()[0].signing_key_id.is_none());
         let record = chain.agent_registry().agents.get("legacy-agent").unwrap();
-        assert_eq!(record.display_name, "Legacy Agent");
-        assert_eq!(record.owner.as_deref(), Some("legacy-team"));
+        assert_eq!(record.display_name, "legacy-agent");
         let active_path = dir.join(chain_storage_filename(
             &chain_key,
             StorageAdapterKind::Binary,
@@ -1588,7 +1591,6 @@ fn legacy_registry_filename_is_upgraded_to_mentisdb_registry_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 // ── v0.5.2 tests: Reframe, Supersedes, cross-chain ThoughtRelation ────────────
 
 /// Verifies that a `Reframe` thought can be appended and read back with the
@@ -1599,7 +1601,11 @@ fn test_reframe_thought_type_roundtrip() {
     let mut chain = MentisDb::open_with_key(&dir, "reframe-roundtrip").unwrap();
 
     let thought = chain
-        .append("agent-reframe", ThoughtType::Reframe, "The failure was not a disaster but a learning opportunity.")
+        .append(
+            "agent-reframe",
+            ThoughtType::Reframe,
+            "The failure was not a disaster but a learning opportunity.",
+        )
         .unwrap();
 
     assert_eq!(thought.thought_type, ThoughtType::Reframe);
@@ -1620,7 +1626,11 @@ fn test_supersedes_relation() {
     let mut chain = MentisDb::open_with_key(&dir, "supersedes-relation").unwrap();
 
     let first = chain
-        .append("agent1", ThoughtType::FactLearned, "We must never retry on timeout.")
+        .append(
+            "agent1",
+            ThoughtType::FactLearned,
+            "We must never retry on timeout.",
+        )
         .unwrap();
     let first_id = first.id;
 
@@ -1644,7 +1654,10 @@ fn test_supersedes_relation() {
     // Reload from disk and verify
     let reloaded = MentisDb::open_with_key(&dir, "supersedes-relation").unwrap();
     let reloaded_second = &reloaded.thoughts()[1];
-    assert_eq!(reloaded_second.relations[0].kind, ThoughtRelationKind::Supersedes);
+    assert_eq!(
+        reloaded_second.relations[0].kind,
+        ThoughtRelationKind::Supersedes
+    );
     assert_eq!(reloaded_second.relations[0].target_id, first_id);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1716,8 +1729,7 @@ fn test_import_memory_markdown_basic() {
     .unwrap();
     src.append_thought(
         "alice",
-        ThoughtInput::new(ThoughtType::Insight, "Connection pooling matters")
-            .with_importance(0.75),
+        ThoughtInput::new(ThoughtType::Insight, "Connection pooling matters").with_importance(0.75),
     )
     .unwrap();
     src.append_thought(
@@ -1770,7 +1782,11 @@ fn test_import_memory_markdown_basic() {
     for t in thoughts {
         match t.thought_type {
             ThoughtType::Decision | ThoughtType::Insight => {
-                assert_eq!(t.agent_id, "alice", "expected alice for {:?}", t.thought_type);
+                assert_eq!(
+                    t.agent_id, "alice",
+                    "expected alice for {:?}",
+                    t.thought_type
+                );
             }
             ThoughtType::Correction => {
                 assert_eq!(t.agent_id, "bob", "expected bob for Correction");

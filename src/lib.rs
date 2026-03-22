@@ -2035,17 +2035,29 @@ impl From<LegacyThoughtRelation> for ThoughtRelation {
     }
 }
 
+/// Mirrors the `Thought` binary layout written by the 0.5.1 (schema-V1) daemon.
+///
+/// Field order MUST match the struct that was `#[derive(Serialize)]`d at write
+/// time, because bincode encodes structs as positional sequences with no field
+/// names.  Differences from the current [`Thought`]:
+///
+/// - Uses [`LegacyThoughtRelation`] (2-field) instead of the modern 3-field
+///   [`ThoughtRelation`] so that the binary decoder stays aligned.
+/// - `signing_key_id` and `thought_signature` are present but always `None` in
+///   practice for V1 chains; they are preserved so the positional layout stays
+///   correct during binary deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacyThoughtV0 {
+    schema_version: u32,
     id: Uuid,
     index: u64,
     timestamp: DateTime<Utc>,
     session_id: Option<Uuid>,
     agent_id: String,
     #[serde(default)]
-    agent_name: String,
+    signing_key_id: Option<String>,
     #[serde(default)]
-    agent_owner: Option<String>,
+    thought_signature: Option<Vec<u8>>,
     thought_type: ThoughtType,
     role: ThoughtRole,
     content: String,
@@ -4302,8 +4314,8 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
             timestamp: legacy.timestamp,
             session_id: legacy.session_id,
             agent_id: legacy.agent_id.clone(),
-            signing_key_id: None,
-            thought_signature: None,
+            signing_key_id: legacy.signing_key_id,
+            thought_signature: legacy.thought_signature,
             thought_type: legacy.thought_type,
             role: legacy.role,
             content: legacy.content,
@@ -4323,13 +4335,7 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
         let hash = compute_thought_hash(&thought);
         let thought = Thought { hash, ..thought };
         prev_hash = thought.hash.clone();
-        agent_registry.observe(
-            &legacy.agent_id,
-            Some(&legacy.agent_name),
-            legacy.agent_owner.as_deref(),
-            legacy.index,
-            legacy.timestamp,
-        );
+        agent_registry.observe(&legacy.agent_id, None, None, legacy.index, legacy.timestamp);
         migrated.push(thought);
     }
 
