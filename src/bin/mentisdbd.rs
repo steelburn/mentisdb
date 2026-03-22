@@ -33,6 +33,8 @@ use mentisdb::{
     refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, SkillRegistry, ThoughtType,
 };
 use std::sync::Arc;
+#[cfg(feature = "startup-sound")]
+use std::sync::{Mutex, OnceLock};
 
 const MENTIS_BANNER: &str = r#"███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
 ████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
@@ -52,6 +54,8 @@ const PINK: &str = "\x1b[38;5;213m";
 const CYAN: &str = "\x1b[38;5;87m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
+#[cfg(feature = "startup-sound")]
+const THOUGHT_SOUND_GAP_MS: u64 = 90;
 
 // ── Startup jingle ────────────────────────────────────────────────────────────
 
@@ -112,6 +116,42 @@ impl rodio::Source for SquareWave {
             self.num_samples as u64 * 1_000 / self.sample_rate as u64,
         ))
     }
+}
+
+#[cfg(feature = "startup-sound")]
+#[derive(Default)]
+struct ThoughtSoundScheduler {
+    next_available_ms: u128,
+}
+
+#[cfg(feature = "startup-sound")]
+impl ThoughtSoundScheduler {
+    fn reserve_delay_ms(&mut self, now_ms: u128, playback_ms: u64) -> u64 {
+        let playback_ms = u128::from(playback_ms);
+        let start_ms = self.next_available_ms.max(now_ms);
+        self.next_available_ms = start_ms + playback_ms + u128::from(THOUGHT_SOUND_GAP_MS);
+        start_ms.saturating_sub(now_ms) as u64
+    }
+}
+
+#[cfg(feature = "startup-sound")]
+fn thought_sound_total_duration_ms(notes: &[(f32, u64)]) -> u64 {
+    notes.iter().map(|&(_, ms)| ms).sum()
+}
+
+#[cfg(feature = "startup-sound")]
+fn reserve_thought_sound_delay_ms(playback_ms: u64) -> u64 {
+    static THOUGHT_SOUND_SCHEDULER: OnceLock<Mutex<ThoughtSoundScheduler>> = OnceLock::new();
+    static THOUGHT_SOUND_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+
+    let scheduler =
+        THOUGHT_SOUND_SCHEDULER.get_or_init(|| Mutex::new(ThoughtSoundScheduler::default()));
+    let now_ms = THOUGHT_SOUND_EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis();
+    let mut scheduler = scheduler.lock().expect("thought sound scheduler poisoned");
+    scheduler.reserve_delay_ms(now_ms, playback_ms)
 }
 
 /// Plays the "men-tis-D-B" startup jingle.
@@ -222,7 +262,12 @@ fn play_notes(notes: &[(f32, u64)]) {
 /// `MENTISDB_THOUGHT_SOUNDS` is set to a truthy value (defaults to `false`).
 #[cfg(feature = "startup-sound")]
 pub fn play_thought_sound(tt: ThoughtType) {
-    play_notes(thought_sound_sequence(tt));
+    let notes = thought_sound_sequence(tt);
+    let delay_ms = reserve_thought_sound_delay_ms(thought_sound_total_duration_ms(notes));
+    if delay_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+    }
+    play_notes(notes);
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -516,6 +561,27 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run().await
+}
+
+#[cfg(all(test, feature = "startup-sound"))]
+mod tests {
+    use super::{ThoughtSoundScheduler, THOUGHT_SOUND_GAP_MS};
+
+    #[test]
+    fn scheduler_spaces_bursts_without_overlap() {
+        let mut scheduler = ThoughtSoundScheduler::default();
+
+        let first = scheduler.reserve_delay_ms(0, 180);
+        let second = scheduler.reserve_delay_ms(0, 120);
+        let third = scheduler.reserve_delay_ms(75, 80);
+
+        assert_eq!(first, 0);
+        assert_eq!(second, 180 + THOUGHT_SOUND_GAP_MS);
+        assert_eq!(
+            third,
+            180 + THOUGHT_SOUND_GAP_MS + 120 + THOUGHT_SOUND_GAP_MS - 75
+        );
+    }
 }
 
 fn print_env_var(name: &str, effective_value: Option<String>) {
