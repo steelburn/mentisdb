@@ -413,6 +413,33 @@
     </div>
   </div>
 
+  <!-- Import MEMORY.md Modal -->
+  <div id="import-md-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:2000;overflow-y:auto;padding:24px 16px">
+    <div style="max-width:640px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <h3 style="margin:0;color:#e6edf3">📥 Import MEMORY.md</h3>
+        <button id="import-md-close" style="background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;line-height:1">&times;</button>
+      </div>
+      <p id="import-md-desc" style="color:#8b949e;font-size:0.88rem;margin:0 0 14px"></p>
+      <div class="form-group">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">Default Agent ID <span style="color:#484f58">(applied when a thought has no agent)</span></label>
+        <input type="text" id="import-md-agent" placeholder="agent-id…" autocomplete="off"
+          style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:0.88rem;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="color:#8b949e;font-size:0.85rem;display:block;margin-bottom:4px">MEMORY.md content</label>
+        <textarea id="import-md-text" placeholder="Paste MEMORY.md content here…"
+          style="width:100%;box-sizing:border-box;height:320px;background:#0d1117;color:#c9d1d9;
+                 border:1px solid #30363d;border-radius:6px;padding:12px;font-family:monospace;
+                 font-size:0.82rem;resize:vertical;line-height:1.5"></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px">
+        <button id="import-md-go" class="btn btn-primary btn-sm">Import</button>
+        <span id="import-md-fb" class="feedback"></span>
+      </div>
+    </div>
+  </div>
+
   <script>
   // =====================================================================
   // CONSTANTS
@@ -420,7 +447,7 @@
   const TYPE_GROUPS = [
     { label: 'Finding',    color: 'blue',   types: ['Finding','Insight','FactLearned','PatternDetected','Hypothesis'] },
     { label: 'Decision',   color: 'yellow', types: ['Constraint','Plan','Subgoal','Decision','StrategyShift'] },
-    { label: 'Correction', color: 'red',    types: ['Mistake','Correction','LessonLearned','AssumptionInvalidated'] },
+    { label: 'Correction', color: 'red',    types: ['Mistake','Correction','Reframe','LessonLearned','AssumptionInvalidated'] },
     { label: 'Inquiry',    color: 'purple', types: ['Wonder','Question','Idea','Experiment'] },
     { label: 'Progress',   color: 'green',  types: ['ActionTaken','TaskComplete','Checkpoint','StateSnapshot','Handoff','Summary'] },
     { label: 'Preference', color: 'orange', types: ['PreferenceUpdate','UserTrait','RelationshipUpdate'] },
@@ -501,7 +528,19 @@
     _prevFocus = document.activeElement;
     const tags     = (thought.tags     || []).map(t => `<span class="badge badge-blue">${esc(t)}</span>`).join(' ');
     const concepts = (thought.concepts || []).map(c => `<span class="badge badge-purple">${esc(c)}</span>`).join(' ');
-    const refs     = (thought.refs     || []).map(r => `<code class="mono">${esc(String(r))}</code>`).join(' ');
+    const refsArr  = thought.refs && thought.refs.length ? thought.refs : null;
+    const refsHtml = refsArr
+      ? refsArr.map(r => `<code class="mono">#${esc(String(r))}</code>`).join(' ')
+      : null;
+    const relArr   = thought.relations && thought.relations.length ? thought.relations : null;
+    const relHtml  = relArr
+      ? `<ul style="margin:4px 0 0 0;padding-left:18px">${
+          relArr.map(rel => {
+            const chain = rel.chain_key ? ` <span style="color:#8b949e">(chain: ${esc(rel.chain_key)})</span>` : '';
+            return `<li style="margin-bottom:2px">${esc(rel.kind)} → <code class="mono" style="font-size:0.78rem">${esc(rel.target_id)}</code>${chain}</li>`;
+          }).join('')
+        }</ul>`
+      : null;
 
     document.getElementById('modal-body').innerHTML = `
       <dl class="t-fields">
@@ -517,7 +556,8 @@
         <dt>Created</dt><dd>${esc(fmtDate(thought.timestamp||thought.created_at))}</dd>
         <dt>Tags</dt>   <dd>${tags     || '<span style="color:#484f58">none</span>'}</dd>
         <dt>Concepts</dt><dd>${concepts || '<span style="color:#484f58">none</span>'}</dd>
-        <dt>Refs</dt>   <dd>${refs     || '<span style="color:#484f58">none</span>'}</dd>
+        ${refsHtml ? `<dt>References</dt><dd>${refsHtml}</dd>` : ''}
+        ${relHtml  ? `<dt>Relations</dt><dd>${relHtml}</dd>` : ''}
       </dl>
       <div class="field-label" style="margin-top:16px">Content</div>
       <pre>${esc(thought.content || '')}</pre>
@@ -731,8 +771,9 @@
     const app = document.getElementById('app');
     app.innerHTML = `
       <a href="#chains" class="back-link">← Back to Chains</a>
-      <div class="page-header">
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
         <h1>Chain: <span class="mono" style="color:#58a6ff;font-size:1.4rem">${esc(chainKey)}</span></h1>
+        <button class="btn btn-secondary btn-sm" id="ex-import-md-btn">📥 Import MEMORY.md</button>
       </div>
       <div class="filter-bar">
         <div class="filter-item">
@@ -838,6 +879,10 @@
     });
 
     exUpdateLabel(); exRenderSel(); loadThoughts();
+
+    document.getElementById('ex-import-md-btn').addEventListener('click', () => {
+      openImportMarkdownModal(chainKey);
+    });
   }
 
   function exSelectGroup(color, select) {
@@ -1882,6 +1927,56 @@
 
     return html;
   }
+  // =====================================================================
+  // IMPORT MEMORY.MD
+  // =====================================================================
+  (function() {
+    const overlay  = document.getElementById('import-md-overlay');
+    const closeBtn = document.getElementById('import-md-close');
+    const desc     = document.getElementById('import-md-desc');
+    const agentIn  = document.getElementById('import-md-agent');
+    const textarea = document.getElementById('import-md-text');
+    const goBtn    = document.getElementById('import-md-go');
+    const fb       = document.getElementById('import-md-fb');
+
+    let _chainKey = null;
+
+    closeBtn.addEventListener('click', () => { overlay.style.display = 'none'; });
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.style.display = 'none'; });
+
+    goBtn.addEventListener('click', () => {
+      const markdown = textarea.value.trim();
+      const defaultAgentId = agentIn.value.trim();
+      if (!markdown) { showFeedback(fb, false, 'Please paste MEMORY.md content.'); return; }
+      goBtn.disabled = true;
+      fb.textContent = '';
+      api(`/dashboard/api/chains/${encodeURIComponent(_chainKey)}/import-markdown`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markdown, default_agent_id: defaultAgentId || undefined }),
+      })
+      .then(d => {
+        const n = d.imported != null ? d.imported : (d.count != null ? d.count : '?');
+        showFeedback(fb, true, `✓ Imported ${n} thought${n === 1 ? '' : 's'}`);
+        textarea.value = '';
+        agentIn.value  = '';
+        setTimeout(() => { overlay.style.display = 'none'; }, 1800);
+      })
+      .catch(err => { showFeedback(fb, false, err.message); })
+      .finally(() => { goBtn.disabled = false; });
+    });
+
+    window.openImportMarkdownModal = function(chainKey) {
+      _chainKey = chainKey;
+      desc.textContent = `Import MEMORY.md into chain "${chainKey}".`;
+      textarea.value = '';
+      agentIn.value  = '';
+      fb.textContent = '';
+      goBtn.disabled = false;
+      overlay.style.display = '';
+    };
+  })();
+
   </script>
 </body>
 </html>
