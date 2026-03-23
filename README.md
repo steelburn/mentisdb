@@ -1,3 +1,5 @@
+<img src="logo.svg" alt="MentisDB logo" height="48" align="left" style="margin-right:12px" />
+
 # MentisDB
 
 MentisDB is a **durable semantic memory engine and versioned skill registry** for AI agents — a persistent, hash-chained brain that survives context resets, model swaps, and team turnover.
