@@ -20,6 +20,8 @@
 //! - `MENTISDB_HTTPS_REST_PORT` (set to 0 to disable; default 9474)
 //! - `MENTISDB_TLS_CERT` (default `~/.cloudllm/mentisdb/tls/cert.pem`)
 //! - `MENTISDB_TLS_KEY` (default `~/.cloudllm/mentisdb/tls/key.pem`)
+//! - `MENTISDB_UPDATE_CHECK` (default `false`; set `1`/`true`/`yes`/`on` to check GitHub releases in the background)
+//! - `MENTISDB_UPDATE_REPO` (default `CloudLLM-ai/mentisdb`)
 //! - `MENTISDB_STARTUP_SOUND` (default `true`; set `0`/`false`/`no`/`off` to silence)
 //! - `MENTISDB_THOUGHT_SOUNDS` (default `false`; set `1`/`true`/`yes`/`on` to enable per-thought sounds)
 //! - `RUST_LOG`
@@ -32,9 +34,15 @@ use mentisdb::{
     load_registered_chains, migrate_registered_chains_with_adapter, migrate_skill_registry,
     refresh_registered_chain_counts, MentisDb, MentisDbMigrationEvent, SkillRegistry, ThoughtType,
 };
+use serde::Deserialize;
+use std::ffi::OsString;
+use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
+use tokio::sync::mpsc;
 
 const MENTIS_BANNER: &str = r#"███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
 ████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
@@ -55,7 +63,36 @@ const CYAN: &str = "\x1b[38;5;87m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 #[cfg(feature = "startup-sound")]
-const THOUGHT_SOUND_GAP_MS: u64 = 90;
+pub(crate) const THOUGHT_SOUND_GAP_MS: u64 = 90;
+pub(crate) const DEFAULT_UPDATE_REPO: &str = "CloudLLM-ai/mentisdb";
+const GITHUB_API_BASE: &str = "https://api.github.com";
+const UPDATE_BINARY_NAME: &str = "mentisdbd";
+const UPDATE_CRATE_NAME: &str = "mentisdb";
+
+#[derive(Debug, Clone)]
+pub(crate) struct UpdateConfig {
+    pub(crate) enabled: bool,
+    pub(crate) repo: String,
+}
+
+#[derive(Debug, Clone)]
+struct UpdateRelease {
+    tag_name: String,
+    html_url: String,
+}
+
+#[derive(Debug)]
+struct RestartRequest {
+    exe_path: PathBuf,
+    args: Vec<OsString>,
+    release_tag: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseResponse {
+    tag_name: String,
+    html_url: String,
+}
 
 // ── Startup jingle ────────────────────────────────────────────────────────────
 
@@ -120,13 +157,13 @@ impl rodio::Source for SquareWave {
 
 #[cfg(feature = "startup-sound")]
 #[derive(Default)]
-struct ThoughtSoundScheduler {
+pub(crate) struct ThoughtSoundScheduler {
     next_available_ms: u128,
 }
 
 #[cfg(feature = "startup-sound")]
 impl ThoughtSoundScheduler {
-    fn reserve_delay_ms(&mut self, now_ms: u128, playback_ms: u64) -> u64 {
+    pub(crate) fn reserve_delay_ms(&mut self, now_ms: u128, playback_ms: u64) -> u64 {
         let playback_ms = u128::from(playback_ms);
         let start_ms = self.next_available_ms.max(now_ms);
         self.next_available_ms = start_ms + playback_ms + u128::from(THOUGHT_SOUND_GAP_MS);
@@ -271,6 +308,315 @@ pub fn play_thought_sound(tt: ThoughtType) {
     play_notes(notes);
 }
 
+fn env_var_truthy(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        })
+        .unwrap_or(default)
+}
+
+pub(crate) fn update_config_from_env() -> UpdateConfig {
+    UpdateConfig {
+        enabled: env_var_truthy("MENTISDB_UPDATE_CHECK", false),
+        repo: std::env::var("MENTISDB_UPDATE_REPO")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_UPDATE_REPO.to_string()),
+    }
+}
+
+pub(crate) fn release_core_version(input: &str) -> Option<[u64; 3]> {
+    let normalized = input.trim().trim_start_matches(['v', 'V']);
+    let mut components = normalized.split('.');
+    let mut parsed = [0_u64; 3];
+    for slot in &mut parsed {
+        let component = components.next()?;
+        let digits: String = component
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            return None;
+        }
+        *slot = digits.parse().ok()?;
+    }
+    Some(parsed)
+}
+
+pub(crate) fn release_tag_is_newer(latest_tag: &str, current_version: &str) -> bool {
+    let Some(latest) = release_core_version(latest_tag) else {
+        return false;
+    };
+    let Some(current) = release_core_version(current_version) else {
+        return false;
+    };
+    latest > current
+}
+
+fn normalize_release_tag_display(tag: &str) -> String {
+    tag.trim().trim_start_matches(['v', 'V']).to_string()
+}
+
+fn ascii_notice_box(title: &str, lines: &[String]) {
+    let width = std::iter::once(title.len())
+        .chain(lines.iter().map(|line| line.len()))
+        .max()
+        .unwrap_or(0);
+    let border = format!("+{}+", "-".repeat(width + 2));
+    println!();
+    println!("{YELLOW}{border}{RESET}");
+    println!("| {:<width$} |", title, width = width);
+    println!("{YELLOW}{border}{RESET}");
+    for line in lines {
+        println!("| {:<width$} |", line, width = width);
+    }
+    println!("{YELLOW}{border}{RESET}");
+}
+
+fn prompt_yes_no(prompt: &str) -> io::Result<bool> {
+    let mut input = String::new();
+    loop {
+        print!("{prompt} [Y/N]: ");
+        io::stdout().flush()?;
+        input.clear();
+        io::stdin().read_line(&mut input)?;
+        match input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("Please type Y or N."),
+        }
+    }
+}
+
+pub(crate) fn build_cargo_install_args(tag: &str, repo: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("install"),
+        OsString::from("--git"),
+        OsString::from(format!("https://github.com/{repo}")),
+        OsString::from("--tag"),
+        OsString::from(tag),
+        OsString::from("--locked"),
+        OsString::from("--force"),
+        OsString::from("--bin"),
+        OsString::from(UPDATE_BINARY_NAME),
+        OsString::from(UPDATE_CRATE_NAME),
+    ]
+}
+
+fn cargo_program() -> OsString {
+    std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
+
+fn cargo_bin_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        return Some(path.join("bin"));
+    }
+
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|home| home.join(".cargo").join("bin"))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|home| home.join(".cargo").join("bin"))
+        })
+}
+
+fn installed_binary_path() -> Option<PathBuf> {
+    let binary_name = if cfg!(windows) {
+        format!("{UPDATE_BINARY_NAME}.exe")
+    } else {
+        UPDATE_BINARY_NAME.to_string()
+    };
+    cargo_bin_dir().map(|dir| dir.join(binary_name))
+}
+
+fn install_latest_release(
+    tag: &str,
+    repo: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    let cargo = cargo_program();
+    let version_status = Command::new(&cargo).arg("--version").status()?;
+    if !version_status.success() {
+        return Err(format!(
+            "cargo executable '{}' is not available",
+            Path::new(&cargo).display()
+        )
+        .into());
+    }
+
+    let status = Command::new(&cargo)
+        .args(build_cargo_install_args(tag, repo))
+        .status()?;
+    if !status.success() {
+        return Err(format!("cargo install failed with status {status}").into());
+    }
+
+    let current_exe = std::env::current_exe()?;
+    Ok(installed_binary_path()
+        .filter(|path| path.exists())
+        .unwrap_or(current_exe))
+}
+
+async fn fetch_latest_release(
+    repo: &str,
+) -> Result<UpdateRelease, Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!(
+            "mentisdbd/{} update-check",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()?;
+    let response = client
+        .get(format!("{GITHUB_API_BASE}/repos/{repo}/releases/latest"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<GitHubReleaseResponse>()
+        .await?;
+    Ok(UpdateRelease {
+        tag_name: response.tag_name,
+        html_url: response.html_url,
+    })
+}
+
+fn shutdown_all_servers(
+    handles: &mut MentisDbServerHandles,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handles.mcp.shutdown()?;
+    handles.rest.shutdown()?;
+    if let Some(handle) = handles.https_mcp.as_mut() {
+        let _ = handle.shutdown();
+    }
+    if let Some(handle) = handles.https_rest.as_mut() {
+        let _ = handle.shutdown();
+    }
+    if let Some(handle) = handles.dashboard.as_mut() {
+        let _ = handle.shutdown();
+    }
+    Ok(())
+}
+
+fn restart_installed_binary(
+    request: &RestartRequest,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Command::new(&request.exe_path)
+        .args(&request.args)
+        .spawn()?;
+    Ok(())
+}
+
+async fn run_update_check_task(
+    config: UpdateConfig,
+    restart_tx: mpsc::UnboundedSender<RestartRequest>,
+) {
+    let latest = match fetch_latest_release(&config.repo).await {
+        Ok(latest) => latest,
+        Err(error) => {
+            println!("Update check failed: {error}");
+            return;
+        }
+    };
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    if !release_tag_is_newer(&latest.tag_name, current_version) {
+        println!(
+            "Update check: mentisdbd is up to date (current {}, latest {}).",
+            current_version,
+            normalize_release_tag_display(&latest.tag_name)
+        );
+        return;
+    }
+
+    let latest_display = normalize_release_tag_display(&latest.tag_name);
+    ascii_notice_box(
+        "mentisdbd update available",
+        &[
+            format!("Current core version: {current_version}"),
+            format!("Latest release tag : {latest_display}"),
+            format!("Release page       : {}", latest.html_url),
+        ],
+    );
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        println!(
+            "Update check: non-interactive terminal detected; skipping prompt. \
+Run `cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}` to update manually.",
+            config.repo,
+            latest.tag_name
+        );
+        return;
+    }
+
+    let should_update = match tokio::task::spawn_blocking({
+        let latest_display = latest_display.clone();
+        move || {
+            prompt_yes_no(&format!(
+                "Install release {latest_display} and restart mentisdbd now?"
+            ))
+        }
+    })
+    .await
+    {
+        Ok(Ok(approved)) => approved,
+        Ok(Err(error)) => {
+            println!("Update prompt failed: {error}");
+            return;
+        }
+        Err(error) => {
+            println!("Update prompt failed: {error}");
+            return;
+        }
+    };
+
+    if !should_update {
+        println!("Update check: skipped update to {latest_display}.");
+        return;
+    }
+
+    println!("Installing release {} via cargo...", latest_display);
+    let restart_request = match tokio::task::spawn_blocking({
+        let tag_name = latest.tag_name.clone();
+        let repo = config.repo.clone();
+        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        move || -> Result<RestartRequest, Box<dyn std::error::Error + Send + Sync>> {
+            let exe_path = install_latest_release(&tag_name, &repo)?;
+            Ok(RestartRequest {
+                exe_path,
+                args,
+                release_tag: tag_name,
+            })
+        }
+    })
+    .await
+    {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => {
+            println!("Update install failed: {error}");
+            return;
+        }
+        Err(error) => {
+            println!("Update install failed: {error}");
+            return;
+        }
+    };
+
+    if restart_tx.send(restart_request).is_err() {
+        println!(
+            "Update installed, but restart signaling failed. Please restart mentisdbd manually."
+        );
+    }
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logger();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
@@ -376,7 +722,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let handles = start_servers(config.clone()).await?;
+    let mut handles = start_servers(config.clone()).await?;
+    let update_config = update_config_from_env();
+    let (restart_tx, mut restart_rx) = mpsc::unbounded_channel::<RestartRequest>();
+    if update_config.enabled {
+        tokio::spawn(run_update_check_task(update_config.clone(), restart_tx));
+    }
 
     // ── Useful info first ────────────────────────────────────────────────────
     print_endpoint_catalog(&handles);
@@ -390,10 +741,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!();
     print_banner();
     // Flush banner to stdout before the jingle plays.
-    {
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-    }
+    let _ = std::io::stdout().flush();
     #[cfg(feature = "startup-sound")]
     play_startup_jingle();
     println!("mentisdb v{}", env!("CARGO_PKG_VERSION"));
@@ -497,6 +845,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }),
     );
     print_env_var(
+        "MENTISDB_UPDATE_CHECK",
+        Some(update_config.enabled.to_string()),
+    );
+    print_env_var("MENTISDB_UPDATE_REPO", Some(update_config.repo.clone()));
+    print_env_var(
         "RUST_LOG",
         std::env::var("RUST_LOG")
             .ok()
@@ -554,7 +907,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
     }
 
-    tokio::signal::ctrl_c().await?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        restart = async {
+            match restart_rx.recv().await {
+                Some(request) => request,
+                None => std::future::pending::<RestartRequest>().await,
+            }
+        }, if update_config.enabled => {
+            println!(
+                "Update installed: restarting mentisdbd with release {}...",
+                normalize_release_tag_display(&restart.release_tag)
+            );
+            shutdown_all_servers(&mut handles)?;
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            restart_installed_binary(&restart)?;
+            return Ok(());
+        }
+    }
     Ok(())
 }
 
@@ -562,27 +932,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run().await
-}
-
-#[cfg(all(test, feature = "startup-sound"))]
-mod tests {
-    use super::{ThoughtSoundScheduler, THOUGHT_SOUND_GAP_MS};
-
-    #[test]
-    fn scheduler_spaces_bursts_without_overlap() {
-        let mut scheduler = ThoughtSoundScheduler::default();
-
-        let first = scheduler.reserve_delay_ms(0, 180);
-        let second = scheduler.reserve_delay_ms(0, 120);
-        let third = scheduler.reserve_delay_ms(75, 80);
-
-        assert_eq!(first, 0);
-        assert_eq!(second, 180 + THOUGHT_SOUND_GAP_MS);
-        assert_eq!(
-            third,
-            180 + THOUGHT_SOUND_GAP_MS + 120 + THOUGHT_SOUND_GAP_MS - 75
-        );
-    }
 }
 
 fn print_env_var(name: &str, effective_value: Option<String>) {
