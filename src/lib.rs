@@ -704,13 +704,14 @@ impl AgentRecord {
 
     fn set_display_name(&mut self, display_name: &str) {
         let display_name = display_name.trim();
-        if display_name.is_empty() || equals_case_insensitive(display_name, &self.display_name) {
+        if display_name.is_empty() || display_name == self.display_name {
             return;
         }
-        if !self
-            .aliases
-            .iter()
-            .any(|alias| equals_case_insensitive(alias, display_name))
+        if !equals_case_insensitive(display_name, &self.display_name)
+            && !self
+                .aliases
+                .iter()
+                .any(|alias| equals_case_insensitive(alias, display_name))
         {
             self.aliases.push(self.display_name.clone());
         }
@@ -2326,8 +2327,7 @@ impl MentisDb {
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or(agent_id)
-            .to_string();
+            .map(ToOwned::to_owned);
         let owner = input
             .agent_owner
             .as_deref()
@@ -2371,7 +2371,7 @@ impl MentisDb {
 
         self.agent_registry.observe(
             agent_id,
-            Some(&display_name),
+            display_name.as_deref(),
             owner.as_deref(),
             index,
             timestamp,

@@ -1401,6 +1401,22 @@ fn agent_registry_admin_methods_manage_metadata_and_keys() {
         Some("Updated admin agent")
     );
 
+    chain
+        .append_thought(
+            "agent-admin",
+            ThoughtInput::new(
+                ThoughtType::Summary,
+                "Append without agent_name should preserve registered metadata.",
+            ),
+        )
+        .unwrap();
+    let after_append = chain.get_agent("agent-admin").unwrap();
+    assert_eq!(after_append.display_name, "Registry Admin");
+    assert_eq!(
+        after_append.description.as_deref(),
+        Some("Updated admin agent")
+    );
+
     let aliased = chain.add_agent_alias("agent-admin", "astro-admin").unwrap();
     assert!(aliased.aliases.iter().any(|alias| alias == "astro-admin"));
 
@@ -1572,6 +1588,31 @@ fn current_version_jsonl_chain_is_reconciled_to_default_binary_storage() {
     let record = chain.agent_registry().agents.get("legacy-agent").unwrap();
     assert_eq!(record.display_name, "Legacy Agent");
     assert_eq!(record.owner.as_deref(), Some("legacy-team"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn upsert_agent_accepts_case_only_display_name_updates_without_alias_churn() {
+    let dir = unique_chain_dir();
+    let mut chain = MentisDb::open_with_key(&dir, "case-only-display-name").unwrap();
+
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "Seed stub record from a thought."),
+        )
+        .unwrap();
+
+    let updated = chain
+        .upsert_agent("astro", Some("Astro"), None, None, None)
+        .unwrap();
+    assert_eq!(updated.display_name, "Astro");
+    assert!(updated.aliases.is_empty());
+
+    let persisted = chain.get_agent("astro").unwrap();
+    assert_eq!(persisted.display_name, "Astro");
+    assert!(persisted.aliases.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
