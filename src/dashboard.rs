@@ -726,7 +726,7 @@ async fn api_agents_all(
         chain_keys.insert(entry.key().clone());
     }
 
-    let mut result: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut result: BTreeMap<String, Value> = BTreeMap::new();
 
     for chain_key in &chain_keys {
         match get_or_open_chain(&state, chain_key).await {
@@ -750,13 +750,29 @@ async fn api_agents_all(
                         v
                     })
                     .collect();
-                result.insert(chain_key.to_string(), agents);
+                result.insert(
+                    chain_key.to_string(),
+                    json!({
+                        "chain_key": chain_key,
+                        "total_agents": chain.agent_registry().agents.len(),
+                        "total_thoughts": thoughts.len(),
+                        "agents": agents,
+                    }),
+                );
             }
             Err((StatusCode::NOT_FOUND, _)) => {
                 continue;
             }
             Err(_) => {
-                result.insert(chain_key.to_string(), Vec::new());
+                result.insert(
+                    chain_key.to_string(),
+                    json!({
+                        "chain_key": chain_key,
+                        "total_agents": 0,
+                        "total_thoughts": 0,
+                        "agents": [],
+                    }),
+                );
             }
         }
     }

@@ -463,7 +463,11 @@ async fn dashboard_agents_all_includes_live_cached_chains() {
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    let live_agents = json["live-only"].as_array().unwrap();
+    let live_entry = &json["live-only"];
+    assert_eq!(live_entry["chain_key"], "live-only");
+    assert_eq!(live_entry["total_agents"], 1);
+    assert_eq!(live_entry["total_thoughts"], 1);
+    let live_agents = live_entry["agents"].as_array().unwrap();
     assert_eq!(live_agents.len(), 1);
     assert_eq!(live_agents[0]["agent_id"], "astro");
     assert_eq!(live_agents[0]["thought_count"], 1);

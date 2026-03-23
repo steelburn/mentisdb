@@ -489,6 +489,11 @@
     return `<span class="badge badge-gray">${esc(s)}</span>`;
   }
 
+  function agentsFromChainEntry(entry) {
+    if (Array.isArray(entry)) return entry;
+    return Array.isArray(entry?.agents) ? entry.agents : [];
+  }
+
   function spinner(el) { el.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>'; }
   function errBox(el, msg) { el.innerHTML = `<div class="error-state">⚠️ ${esc(msg)}</div>`; }
 
@@ -990,9 +995,18 @@
         const keys = Object.keys(data || {});
         if (!keys.length) { el.innerHTML = '<div class="empty-state">No agents found.</div>'; return; }
         el.innerHTML = keys.map(ck => {
-          const agents = data[ck] || [];
+          const chainEntry = data[ck] || {};
+          const agents = agentsFromChainEntry(chainEntry);
+          const totalAgents = Number.isFinite(chainEntry.total_agents) ? chainEntry.total_agents : agents.length;
+          const totalThoughts = Number.isFinite(chainEntry.total_thoughts)
+            ? chainEntry.total_thoughts
+            : agents.reduce((sum, agent) => sum + Number(agent.thought_count || 0), 0);
           return `
             <div class="section-label">Chain: ${esc(ck)}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px">
+              <span class="badge badge-blue">Total Agents: ${esc(String(totalAgents))}</span>
+              <span class="badge badge-purple">Total Thoughts: ${esc(String(totalThoughts))}</span>
+            </div>
             <div class="card" style="margin-bottom:20px">
               <div class="table-wrap"><table>
                 <thead><tr><th>Agent ID</th><th>Display Name</th><th>Owner</th><th>Thoughts</th><th>Status</th><th></th></tr></thead>
@@ -1225,7 +1239,7 @@
         const chainsEl = document.getElementById('ad-thoughts-chains');
         if (!chainsEl) return;
         const chains = Object.entries(allByChain)
-          .filter(([ck, agents]) => agents.some(a => a.agent_id === agentId || a.id === agentId));
+          .filter(([ck, entry]) => agentsFromChainEntry(entry).some(a => a.agent_id === agentId || a.id === agentId));
         if (chains.length <= 1) return; // only show if more than the current chain
         chainsEl.innerHTML = chains.map(([ck]) =>
           `<a class="btn btn-secondary btn-sm" style="margin-right:6px;margin-bottom:4px"
@@ -1348,7 +1362,7 @@
       api('/dashboard/api/agents')
         .then(allByChain => {
           const chains = Object.keys(allByChain)
-            .filter(ck => (allByChain[ck] || []).some(a => a.agent_id === agentId || a.id === agentId));
+            .filter(ck => agentsFromChainEntry(allByChain[ck]).some(a => a.agent_id === agentId || a.id === agentId));
           // Always include the current chain even if it wasn't in the all-agents response.
           if (!chains.includes(currentChainKey)) chains.unshift(currentChainKey);
           chains.forEach(ck => {
@@ -1447,7 +1461,7 @@
       ]).then(([chainsData, allByChain]) => {
         const existsOn = new Set(
           Object.entries(allByChain)
-            .filter(([, agents]) => agents.some(a => (a.agent_id || a.id) === agentId))
+            .filter(([, entry]) => agentsFromChainEntry(entry).some(a => (a.agent_id || a.id) === agentId))
             .map(([ck]) => ck)
         );
         const eligible = (Array.isArray(chainsData) ? chainsData : (chainsData.chains || []))
