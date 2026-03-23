@@ -530,6 +530,82 @@ For user-scoped configuration:
 qwen mcp add --scope user --transport http mentisdb http://127.0.0.1:9471
 ```
 
+### Claude for Desktop
+
+Claude for Desktop connects to MCP servers through `claude_desktop_config.json`.
+It requires [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a bridge
+between the desktop app and the MentisDB HTTPS endpoint.
+
+**Step 1 — Install mcp-remote** (Node.js required):
+
+```bash
+npm install -g mcp-remote
+```
+
+**Step 2 — Edit the config file** (location by OS):
+
+| OS      | Path |
+|---------|------|
+| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux   | `~/.config/Claude/claude_desktop_config.json` |
+
+**macOS:**
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/opt/homebrew/bin/mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}
+```
+
+If Windows can't find the binary, supply the full path:
+`C:\Users\YourName\AppData\Roaming\npm\mcp-remote.cmd`
+
+**Linux:**
+
+```json
+{
+  "mcpServers": {
+    "mentisdb": {
+      "command": "/usr/local/bin/mcp-remote",
+      "args": ["https://my.mentisdb.com:9473"],
+      "env": { "NODE_TLS_REJECT_UNAUTHORIZED": "0" }
+    }
+  }
+}
+```
+
+Use `which mcp-remote` to confirm the binary path on your machine.
+
+> **Why `NODE_TLS_REJECT_UNAUTHORIZED: "0"`?**  
+> MentisDB ships with a self-signed TLS certificate. Node.js rejects self-signed
+> certs by default, which causes `mcp-remote` to disconnect immediately after the
+> MCP `initialize` handshake. This env var disables that check for the
+> `mcp-remote` process only. As an alternative, trust the certificate at the OS
+> level (`sudo security add-trusted-cert` on macOS) and remove the `env` block.
+
+Restart Claude for Desktop after saving the config file.
+
 ### Claude Code
 
 Claude Code supports MCP servers through its `claude mcp` commands and
