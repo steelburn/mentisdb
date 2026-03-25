@@ -9,7 +9,7 @@ CARGO_CMD=/usr/bin/env cargo
 # ----------------------------------------------------------------------------------------------------------------------
 
 # Default target (ensures formatting before building)
-build: fmt build-mentisdbd ## Build the crate in release mode (runs fmt first)
+build: fmt ## Build the crate in release mode (runs fmt first)
 	${CARGO_CMD} build --release
 
 # Build the mentisdbd daemon binary
@@ -53,9 +53,9 @@ publish: ## Publish mentisdb to crates.io
 publish-dry-run: ## Dry-run publish to crates.io
 	${CARGO_CMD} publish --dry-run
 
-# Install the mentisdbd daemon locally
-install: ## Install mentisdbd binary via cargo install
-	${CARGO_CMD} install --path . --bin mentisdbd
+# Install the mentisdbd executable locally
+install: ## Install mentisdbd via cargo install
+	${CARGO_CMD} install --path . --locked
 
 # Clean build artifacts
 clean: ## Remove build artifacts using cargo clean

@@ -86,7 +86,7 @@ make clippy         # cargo fmt + clippy --all-targets -D warnings
 make test           # cargo test
 make bench          # Criterion benchmarks, output tee'd to /tmp/mentisdb_bench_results.txt
 make doc            # cargo doc --all-features
-make install        # cargo install --path . --bin mentisdbd
+make install        # cargo install --path . --locked
 make publish        # cargo publish
 make publish-dry-run
 make clean
@@ -189,7 +189,7 @@ cargo doc --no-deps --no-default-features
 
 ## Run The Daemon
 
-The standalone daemon binary is `mentisdbd`.
+The standalone executable is `mentisdbd`.
 
 Run it from source:
 
@@ -203,6 +203,15 @@ Install it from the crate directory:
 make install
 # or
 cargo install --path . --locked
+```
+
+`mentisdbd` now owns both daemon startup and local integration setup:
+
+```bash
+mentisdbd setup codex
+mentisdbd setup all --dry-run
+mentisdbd wizard
+mentisdbd
 ```
 
 When it starts, it serves:

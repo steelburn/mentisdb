@@ -949,21 +949,22 @@ mentisdbd daemon
 Usage:
   mentisdbd
   mentisdbd --help
+  mentisdbd setup <agent|all> [--url <url>] [--dry-run]
+  mentisdbd wizard [--url <url>] [--yes]
 
 Role:
   Start the MentisDB MCP server, REST server, and web dashboard.
 
-Setup and onboarding:
-  The interactive setup and integration commands live in the separate `mentisdb` binary
-  and are also accepted here as passthrough commands:
-    mentisdb --help
-    mentisdb setup <agent|all>
-    mentisdb wizard
-    mentisdb setup --help
-    mentisdbd setup <agent|all>
-    mentisdbd wizard
+Setup and onboarding subcommands:
+  setup
+    Configure one supported integration or `all`.
+    Run `mentisdbd setup --help` for setup examples and options.
 
-  Valid values for `mentisdb setup <agent>`:
+  wizard
+    Detect supported local clients and configure them interactively.
+    Run `mentisdbd wizard --help` for wizard examples and options.
+
+  Valid values for `mentisdbd setup <agent>`:
     codex
     claude-code
     claude-desktop
@@ -1026,7 +1027,7 @@ Examples:
 pub(crate) enum DaemonArgMode {
     Help,
     Run,
-    ForwardToCli(Vec<OsString>),
+    CliSubcommand(Vec<OsString>),
 }
 
 pub(crate) fn parse_daemon_args<I, T>(args: I) -> Result<DaemonArgMode, String>
@@ -1046,9 +1047,9 @@ where
 
     let first = args[0].to_string_lossy();
     if matches!(first.as_ref(), "setup" | "wizard") {
-        let mut forwarded = vec![OsString::from("mentisdb")];
-        forwarded.extend(args);
-        return Ok(DaemonArgMode::ForwardToCli(forwarded));
+        let mut command = vec![OsString::from("mentisdbd")];
+        command.extend(args);
+        return Ok(DaemonArgMode::CliSubcommand(command));
     }
 
     Err(format!(
@@ -1060,7 +1061,7 @@ where
     ))
 }
 
-fn run_forwarded_cli(args: Vec<OsString>) -> ExitCode {
+fn run_cli_subcommand(args: Vec<OsString>) -> ExitCode {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let stderr = io::stderr();
@@ -1068,10 +1069,10 @@ fn run_forwarded_cli(args: Vec<OsString>) -> ExitCode {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
 
-    run_forwarded_cli_with_io(args, &mut input, &mut output, &mut errors)
+    run_cli_subcommand_with_io(args, &mut input, &mut output, &mut errors)
 }
 
-pub(crate) fn run_forwarded_cli_with_io(
+pub(crate) fn run_cli_subcommand_with_io(
     args: Vec<OsString>,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
@@ -1095,7 +1096,7 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Ok(DaemonArgMode::ForwardToCli(args)) => run_forwarded_cli(args),
+        Ok(DaemonArgMode::CliSubcommand(args)) => run_cli_subcommand(args),
         Err(message) => {
             eprintln!("{message}");
             eprintln!();

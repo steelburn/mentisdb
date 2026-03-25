@@ -6,7 +6,7 @@ use mentisdb::paths::{HostPlatform, PathEnvironment};
 #[test]
 fn parse_setup_command_accepts_supported_agent_and_url_override() {
     let parsed = parse_args([
-        "mentisdb",
+        "mentisdbd",
         "setup",
         "codex",
         "--url",
@@ -26,13 +26,13 @@ fn parse_setup_command_accepts_supported_agent_and_url_override() {
 
 #[test]
 fn parse_setup_help_returns_help_command() {
-    let parsed = parse_args(["mentisdb", "setup", "--help"]).unwrap();
+    let parsed = parse_args(["mentisdbd", "setup", "--help"]).unwrap();
     assert_eq!(parsed, CliCommand::Help);
 }
 
 #[test]
 fn parse_setup_command_keeps_per_integration_defaults_when_url_is_omitted() {
-    let parsed = parse_args(["mentisdb", "setup", "claude-desktop"]).unwrap();
+    let parsed = parse_args(["mentisdbd", "setup", "claude-desktop"]).unwrap();
 
     assert_eq!(
         parsed,
@@ -91,7 +91,7 @@ fn rendered_setup_plan_includes_status_and_action() {
 
 #[test]
 fn help_text_lists_all_supported_agents_and_commands() {
-    let help = mentisdb::cli::parse_args(["mentisdb", "--help"]);
+    let help = mentisdb::cli::parse_args(["mentisdbd", "--help"]);
     assert!(help.is_ok());
 
     let text = {
@@ -100,7 +100,12 @@ fn help_text_lists_all_supported_agents_and_commands() {
         let mut input = Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
         let mut errors = Vec::new();
-        let _ = run_with_io(["mentisdb", "--help"], &mut input, &mut output, &mut errors);
+        let _ = run_with_io(
+            ["mentisdbd", "--help"],
+            &mut input,
+            &mut output,
+            &mut errors,
+        );
         String::from_utf8(output).unwrap()
     };
 
@@ -116,6 +121,6 @@ fn help_text_lists_all_supported_agents_and_commands() {
     ] {
         assert!(text.contains(agent), "missing {agent} in help text");
     }
-    assert!(text.contains("mentisdb setup <agent|all>"));
-    assert!(text.contains("mentisdb wizard"));
+    assert!(text.contains("mentisdbd setup <agent|all>"));
+    assert!(text.contains("mentisdbd wizard"));
 }

@@ -25,7 +25,12 @@ fn wizard_can_apply_default_detected_codex_setup_in_temp_home() {
     let mut output = Vec::new();
     let mut errors = Vec::new();
 
-    let code = run_with_io(["mentisdb", "wizard"], &mut input, &mut output, &mut errors);
+    let code = run_with_io(
+        ["mentisdbd", "wizard"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
 
     match previous_home {
         Some(value) => std::env::set_var("HOME", value),
@@ -66,7 +71,12 @@ fn wizard_can_skip_existing_configured_entry() {
     let mut output = Vec::new();
     let mut errors = Vec::new();
 
-    let code = run_with_io(["mentisdb", "wizard"], &mut input, &mut output, &mut errors);
+    let code = run_with_io(
+        ["mentisdbd", "wizard"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
 
     match previous_home {
         Some(value) => std::env::set_var("HOME", value),

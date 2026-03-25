@@ -21,7 +21,7 @@ pub struct WizardCommand {
     pub assume_yes: bool,
 }
 
-/// Supported top-level commands for the `mentisdb` binary.
+/// Supported top-level commands for `mentisdbd` setup and wizard subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     /// Print CLI help.
@@ -32,7 +32,7 @@ pub enum CliCommand {
     Wizard(WizardCommand),
 }
 
-/// Parse command-line arguments for the `mentisdb` binary.
+/// Parse command-line arguments for the embedded `mentisdbd` setup and wizard CLI.
 pub fn parse_args<I, T>(args: I) -> Result<CliCommand, String>
 where
     I: IntoIterator<Item = T>,
@@ -61,12 +61,13 @@ where
 
 pub(crate) fn help_text() -> &'static str {
     "\
-mentisdb CLI
+mentisdbd setup and wizard
 
 Usage:
-  mentisdb --help
-  mentisdb setup <agent|all> [--url <url>] [--dry-run]
-  mentisdb wizard [--url <url>] [--yes]
+  mentisdbd --help
+  mentisdbd
+  mentisdbd setup <agent|all> [--url <url>] [--dry-run]
+  mentisdbd wizard [--url <url>] [--yes]
 
 Supported agents:
   codex
@@ -84,10 +85,10 @@ Commands:
     or for every supported integration with `all`.
 
     Examples:
-      mentisdb setup codex
-      mentisdb setup claude-desktop
-      mentisdb setup all --dry-run
-      mentisdb setup qwen --url http://127.0.0.1:9471
+      mentisdbd setup codex
+      mentisdbd setup claude-desktop
+      mentisdbd setup all --dry-run
+      mentisdbd setup qwen --url http://127.0.0.1:9471
 
     Options:
       --url <url>   Override the default MentisDB MCP endpoint for the selected target(s)
@@ -105,9 +106,9 @@ Commands:
       - For Claude Desktop, checks for npm and installs mcp-remote if needed
 
     Examples:
-      mentisdb wizard
-      mentisdb wizard --yes
-      mentisdb wizard --url https://my.mentisdb.com:9473
+      mentisdbd wizard
+      mentisdbd wizard --yes
+      mentisdbd wizard --url https://my.mentisdb.com:9473
 
     Options:
       --url <url>   Override the default URL for all selected integrations
@@ -115,8 +116,9 @@ Commands:
       --help        Show this help text
 
 Notes:
-  - `mentisdb` with no subcommand will show this help, and on first interactive run
-    may launch the setup wizard automatically.
+  - `mentisdbd` with no subcommand starts the daemon.
+  - `mentisdbd --help` shows daemon help; `mentisdbd setup --help` and
+    `mentisdbd wizard --help` show the setup/wizard surface.
   - `setup` writes config files; it is not scaffold-only.
 "
 }

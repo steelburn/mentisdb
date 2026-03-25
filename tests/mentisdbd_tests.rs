@@ -94,11 +94,8 @@ fn update_config_respects_false_flag_and_trimmed_repo_override() {
 }
 
 #[test]
-fn mentisdbd_help_mentions_separate_setup_and_wizard_binary() {
+fn mentisdbd_help_lists_native_setup_and_wizard_subcommands() {
     let help = mentisdbd_impl::daemon_help_text();
-    assert!(help.contains("mentisdb setup <agent|all>"));
-    assert!(help.contains("mentisdb wizard"));
-    assert!(help.contains("mentisdb setup --help"));
     assert!(help.contains("mentisdbd setup <agent|all>"));
     assert!(help.contains("mentisdbd wizard"));
     assert!(help.contains("mentisdbd --help"));
@@ -138,12 +135,12 @@ fn parse_daemon_args_accepts_only_help_or_no_args() {
 }
 
 #[test]
-fn parse_daemon_args_forwards_setup_and_wizard_subcommands() {
+fn parse_daemon_args_accepts_native_setup_and_wizard_subcommands() {
     assert_eq!(
         mentisdbd_impl::parse_daemon_args([OsString::from("setup"), OsString::from("opencode")])
             .unwrap(),
-        mentisdbd_impl::DaemonArgMode::ForwardToCli(vec![
-            OsString::from("mentisdb"),
+        mentisdbd_impl::DaemonArgMode::CliSubcommand(vec![
+            OsString::from("mentisdbd"),
             OsString::from("setup"),
             OsString::from("opencode"),
         ])
@@ -151,8 +148,8 @@ fn parse_daemon_args_forwards_setup_and_wizard_subcommands() {
 
     assert_eq!(
         mentisdbd_impl::parse_daemon_args([OsString::from("wizard")]).unwrap(),
-        mentisdbd_impl::DaemonArgMode::ForwardToCli(vec![
-            OsString::from("mentisdb"),
+        mentisdbd_impl::DaemonArgMode::CliSubcommand(vec![
+            OsString::from("mentisdbd"),
             OsString::from("wizard"),
         ])
     );
@@ -166,14 +163,14 @@ fn parse_daemon_args_rejects_other_unexpected_arguments() {
 }
 
 #[test]
-fn forwarded_setup_help_uses_the_mentisdb_cli_surface() {
+fn setup_help_uses_the_embedded_mentisdbd_cli_surface() {
     let mut input = Cursor::new(Vec::<u8>::new());
     let mut output = Vec::new();
     let mut errors = Vec::new();
 
-    let code = mentisdbd_impl::run_forwarded_cli_with_io(
+    let code = mentisdbd_impl::run_cli_subcommand_with_io(
         vec![
-            OsString::from("mentisdb"),
+            OsString::from("mentisdbd"),
             OsString::from("setup"),
             OsString::from("--help"),
         ],
@@ -186,7 +183,7 @@ fn forwarded_setup_help_uses_the_mentisdb_cli_surface() {
     assert!(errors.is_empty());
 
     let stdout = String::from_utf8(output).unwrap();
-    assert!(stdout.contains("mentisdb setup <agent|all>"));
+    assert!(stdout.contains("mentisdbd setup <agent|all>"));
     assert!(stdout.contains("Supported agents:"));
     assert!(!stdout.contains("mentisdbd daemon"));
 }

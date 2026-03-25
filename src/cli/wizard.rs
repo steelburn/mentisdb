@@ -133,17 +133,6 @@ pub(super) fn run_wizard(
     persist_wizard_state(&env)
 }
 
-pub(super) fn run_first_run_wizard(input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result<()> {
-    run_wizard(
-        &WizardCommand {
-            url: None,
-            assume_yes: false,
-        },
-        input,
-        out,
-    )
-}
-
 fn render_catalog_summary(catalog: &SetupCatalogPlan, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Detected integrations:")?;
     for (index, plan) in catalog.integrations.iter().enumerate() {

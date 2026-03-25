@@ -65,10 +65,6 @@ name = "http_concurrency"
 harness = false
 
 [[bin]]
-name = "mentisdb"
-path = "src/bin/mentisdb.rs"
-
-[[bin]]
 name = "mentisdbd"
 path = "src/bin/mentisdbd.rs"
 required-features = ["server"]

@@ -155,7 +155,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         }
         IntegrationKind::Qwen => Some(format!("qwen mcp add --transport http mentisdb {url}")),
         IntegrationKind::CopilotCli => Some(
-            "Use `/mcp add` inside Copilot CLI or let `mentisdb setup copilot` write ~/.copilot/mcp-config.json.".to_string(),
+            "Use `/mcp add` inside Copilot CLI or let `mentisdbd setup copilot` write ~/.copilot/mcp-config.json.".to_string(),
         ),
         _ => None,
     };
