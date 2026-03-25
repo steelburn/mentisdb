@@ -39,6 +39,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::ExitCode;
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
@@ -1004,24 +1005,66 @@ Examples:
 "
 }
 
-pub(crate) fn args_request_help<I, T>(args: I) -> bool
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonArgMode {
+    Help,
+    Run,
+}
+
+pub(crate) fn parse_daemon_args<I, T>(args: I) -> Result<DaemonArgMode, String>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    args.into_iter()
+    let args = args
+        .into_iter()
         .map(|arg| arg.into().to_string_lossy().into_owned())
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help"))
+        .collect::<Vec<_>>();
+
+    if args.is_empty() {
+        return Ok(DaemonArgMode::Run);
+    }
+
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h" | "help") {
+        return Ok(DaemonArgMode::Help);
+    }
+
+    let first = &args[0];
+    if matches!(first.as_str(), "setup" | "wizard") {
+        return Err(format!(
+            "`mentisdbd {}` is not a valid daemon command. Use `mentisdb {}` instead.",
+            first, first
+        ));
+    }
+
+    Err(format!(
+        "Unexpected arguments for `mentisdbd`: {}",
+        args.join(" ")
+    ))
 }
 
 #[allow(dead_code)]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if args_request_help(std::env::args_os().skip(1)) {
-        println!("{}", daemon_help_text());
-        return Ok(());
+async fn main() -> ExitCode {
+    match parse_daemon_args(std::env::args_os().skip(1)) {
+        Ok(DaemonArgMode::Help) => {
+            println!("{}", daemon_help_text());
+            ExitCode::SUCCESS
+        }
+        Ok(DaemonArgMode::Run) => match run().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            }
+        },
+        Err(message) => {
+            eprintln!("{message}");
+            eprintln!();
+            eprintln!("{}", daemon_help_text());
+            ExitCode::from(2)
+        }
     }
-    run().await
 }
 
 fn print_env_var(name: &str, effective_value: Option<String>) {

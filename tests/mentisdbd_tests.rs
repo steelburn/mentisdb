@@ -100,14 +100,42 @@ fn mentisdbd_help_mentions_separate_setup_and_wizard_binary() {
 }
 
 #[test]
-fn mentisdbd_help_flags_are_detected_without_starting_the_server() {
-    assert!(mentisdbd_impl::args_request_help([OsString::from(
-        "--help"
-    ),]));
-    assert!(mentisdbd_impl::args_request_help([OsString::from("-h")]));
-    assert!(!mentisdbd_impl::args_request_help([OsString::from(
-        "--version"
-    )]));
+fn parse_daemon_args_accepts_only_help_or_no_args() {
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args(Vec::<OsString>::new()).unwrap(),
+        mentisdbd_impl::DaemonArgMode::Run
+    );
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("--help")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::Help
+    );
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("-h")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::Help
+    );
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("help")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::Help
+    );
+}
+
+#[test]
+fn parse_daemon_args_rejects_setup_and_wizard_subcommands() {
+    let setup = mentisdbd_impl::parse_daemon_args([OsString::from("setup"), OsString::from("all")])
+        .unwrap_err();
+    assert!(setup.contains("mentisdbd setup"));
+    assert!(setup.contains("mentisdb setup"));
+
+    let wizard = mentisdbd_impl::parse_daemon_args([OsString::from("wizard")]).unwrap_err();
+    assert!(wizard.contains("mentisdbd wizard"));
+    assert!(wizard.contains("mentisdb wizard"));
+}
+
+#[test]
+fn parse_daemon_args_rejects_other_unexpected_arguments() {
+    let error = mentisdbd_impl::parse_daemon_args([OsString::from("--version")]).unwrap_err();
+    assert!(error.contains("Unexpected arguments"));
+    assert!(error.contains("--version"));
 }
 
 #[cfg(feature = "startup-sound")]
