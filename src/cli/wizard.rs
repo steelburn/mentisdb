@@ -80,7 +80,7 @@ pub(super) fn run_wizard(
                 plan.integration.display_name()
             );
             let decision = boxed_yn_prompt(out, &question, false, input)?;
-            if !decision.eq_ignore_ascii_case("o") && !decision.eq_ignore_ascii_case("overwrite") {
+            if !decision.eq_ignore_ascii_case("y") && !decision.eq_ignore_ascii_case("yes") {
                 continue;
             }
         }

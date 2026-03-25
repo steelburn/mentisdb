@@ -42,7 +42,8 @@ pub fn boxed_yn_prompt(
     writeln!(out)?;
     writeln!(out, "{}{}{}", DIM, border, RESET)?;
     for line in question.lines() {
-        writeln!(out, "| {}{}{} |", BOLD, line, RESET)?;
+        let line_pad = " ".repeat(width.saturating_sub(line.len()));
+        writeln!(out, "| {}{}{}{} |", BOLD, line, RESET, line_pad)?;
     }
     writeln!(out, "{}{}{}", DIM, border, RESET)?;
     let pad = " ".repeat(width.saturating_sub(choice_row.len()));
@@ -128,7 +129,7 @@ pub fn boxed_skip_notice(out: &mut dyn Write, integration_name: &str) -> io::Res
 
     writeln!(out)?;
     writeln!(out, "{}{}{}", DIM, border, RESET)?;
-    writeln!(out, "{}{}| {}{}{} |", DIM, BOLD, RESET, msg, RESET)?;
+    writeln!(out, "{}| {} |{}", DIM, msg, RESET)?;
     writeln!(out, "{}{}{}", DIM, border, RESET)?;
     Ok(())
 }
