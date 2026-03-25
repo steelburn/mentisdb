@@ -1,6 +1,8 @@
 #![cfg(feature = "server")]
 
 use std::ffi::OsString;
+use std::io::Cursor;
+use std::process::ExitCode;
 use std::sync::{Mutex, OnceLock};
 
 #[path = "../src/bin/mentisdbd.rs"]
@@ -97,6 +99,8 @@ fn mentisdbd_help_mentions_separate_setup_and_wizard_binary() {
     assert!(help.contains("mentisdb setup <agent|all>"));
     assert!(help.contains("mentisdb wizard"));
     assert!(help.contains("mentisdb setup --help"));
+    assert!(help.contains("mentisdbd setup <agent|all>"));
+    assert!(help.contains("mentisdbd wizard"));
     assert!(help.contains("mentisdbd --help"));
     for agent in [
         "codex",
@@ -134,16 +138,24 @@ fn parse_daemon_args_accepts_only_help_or_no_args() {
 }
 
 #[test]
-fn parse_daemon_args_rejects_setup_and_wizard_subcommands() {
-    let setup =
+fn parse_daemon_args_forwards_setup_and_wizard_subcommands() {
+    assert_eq!(
         mentisdbd_impl::parse_daemon_args([OsString::from("setup"), OsString::from("opencode")])
-            .unwrap_err();
-    assert!(setup.contains("mentisdbd setup opencode"));
-    assert!(setup.contains("mentisdb setup opencode"));
+            .unwrap(),
+        mentisdbd_impl::DaemonArgMode::ForwardToCli(vec![
+            OsString::from("mentisdb"),
+            OsString::from("setup"),
+            OsString::from("opencode"),
+        ])
+    );
 
-    let wizard = mentisdbd_impl::parse_daemon_args([OsString::from("wizard")]).unwrap_err();
-    assert!(wizard.contains("mentisdbd wizard"));
-    assert!(wizard.contains("mentisdb wizard"));
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("wizard")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::ForwardToCli(vec![
+            OsString::from("mentisdb"),
+            OsString::from("wizard"),
+        ])
+    );
 }
 
 #[test]
@@ -151,6 +163,32 @@ fn parse_daemon_args_rejects_other_unexpected_arguments() {
     let error = mentisdbd_impl::parse_daemon_args([OsString::from("--version")]).unwrap_err();
     assert!(error.contains("Unexpected arguments"));
     assert!(error.contains("--version"));
+}
+
+#[test]
+fn forwarded_setup_help_uses_the_mentisdb_cli_surface() {
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = mentisdbd_impl::run_forwarded_cli_with_io(
+        vec![
+            OsString::from("mentisdb"),
+            OsString::from("setup"),
+            OsString::from("--help"),
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("mentisdb setup <agent|all>"));
+    assert!(stdout.contains("Supported agents:"));
+    assert!(!stdout.contains("mentisdbd daemon"));
 }
 
 #[cfg(feature = "startup-sound")]

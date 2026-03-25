@@ -36,7 +36,7 @@ use mentisdb::{
 };
 use serde::Deserialize;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::ExitCode;
@@ -954,11 +954,14 @@ Role:
   Start the MentisDB MCP server, REST server, and web dashboard.
 
 Setup and onboarding:
-  The interactive setup and integration commands live in the separate `mentisdb` binary:
+  The interactive setup and integration commands live in the separate `mentisdb` binary
+  and are also accepted here as passthrough commands:
     mentisdb --help
     mentisdb setup <agent|all>
     mentisdb wizard
     mentisdb setup --help
+    mentisdbd setup <agent|all>
+    mentisdbd wizard
 
   Valid values for `mentisdb setup <agent>`:
     codex
@@ -1019,10 +1022,11 @@ Examples:
 "
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DaemonArgMode {
     Help,
     Run,
+    ForwardToCli(Vec<OsString>),
 }
 
 pub(crate) fn parse_daemon_args<I, T>(args: I) -> Result<DaemonArgMode, String>
@@ -1030,31 +1034,50 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let args = args
-        .into_iter()
-        .map(|arg| arg.into().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+    let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
 
     if args.is_empty() {
         return Ok(DaemonArgMode::Run);
     }
 
-    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h" | "help") {
+    if args.len() == 1 && matches!(args[0].to_string_lossy().as_ref(), "--help" | "-h" | "help") {
         return Ok(DaemonArgMode::Help);
     }
 
-    let first = &args[0];
-    if matches!(first.as_str(), "setup" | "wizard") {
-        let forwarded = args.join(" ");
-        return Err(format!(
-            "`mentisdbd {forwarded}` is not a valid daemon command. Use `mentisdb {forwarded}` instead."
-        ));
+    let first = args[0].to_string_lossy();
+    if matches!(first.as_ref(), "setup" | "wizard") {
+        let mut forwarded = vec![OsString::from("mentisdb")];
+        forwarded.extend(args);
+        return Ok(DaemonArgMode::ForwardToCli(forwarded));
     }
 
     Err(format!(
         "Unexpected arguments for `mentisdbd`: {}",
-        args.join(" ")
+        args.iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
     ))
+}
+
+fn run_forwarded_cli(args: Vec<OsString>) -> ExitCode {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+    let mut errors = stderr.lock();
+
+    run_forwarded_cli_with_io(args, &mut input, &mut output, &mut errors)
+}
+
+pub(crate) fn run_forwarded_cli_with_io(
+    args: Vec<OsString>,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    mentisdb::cli::run_with_io(args, input, out, err)
 }
 
 #[allow(dead_code)]
@@ -1072,6 +1095,7 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Ok(DaemonArgMode::ForwardToCli(args)) => run_forwarded_cli(args),
         Err(message) => {
             eprintln!("{message}");
             eprintln!();
