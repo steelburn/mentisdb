@@ -505,3 +505,159 @@ async fn dashboard_agents_all_includes_live_cached_chains() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn chain_search_endpoint_filters_and_paginates_results() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .upsert_agent(
+            "astro",
+            Some("Astro"),
+            Some("@gubatron"),
+            Some("Search owner"),
+            Some(AgentStatus::Active),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "first dashboard search hit"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "zeus",
+            ThoughtInput::new(ThoughtType::Decision, "ignore this decision"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Insight, "second dashboard search hit"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source/search?text=dashboard%20search&agent_id=astro&page=1&per_page=1&order=desc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let thoughts = json["thoughts"].as_array().unwrap();
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["pages"], 2);
+    assert_eq!(thoughts.len(), 1);
+    assert_eq!(thoughts[0]["agent_id"], "astro");
+    assert_eq!(thoughts[0]["content"], "second dashboard search hit");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn chain_search_agent_options_include_live_authors_only() {
+    let dir = unique_chain_dir();
+    let mut chain =
+        MentisDb::open_with_key_and_storage_kind(&dir, "source", StorageAdapterKind::Binary)
+            .unwrap();
+    chain
+        .upsert_agent(
+            "ghost",
+            Some("Ghost"),
+            Some("@gubatron"),
+            Some("Registry only"),
+            Some(AgentStatus::Active),
+        )
+        .unwrap();
+    chain
+        .upsert_agent(
+            "astro",
+            Some("Astro"),
+            Some("@gubatron"),
+            Some("Live author"),
+            Some(AgentStatus::Active),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "astro",
+            ThoughtInput::new(ThoughtType::Summary, "Astro wrote this"),
+        )
+        .unwrap();
+    chain
+        .append_thought(
+            "bot",
+            ThoughtInput::new(ThoughtType::Summary, "Bot wrote this too"),
+        )
+        .unwrap();
+    drop(chain);
+
+    let router = dashboard_router_for_dir(&dir);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard/api/chains/source/search/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let agents = json.as_array().unwrap();
+
+    assert!(agents.iter().any(|agent| {
+        agent["agent_id"] == "astro"
+            && agent["display_name"] == "Astro"
+            && agent["thought_count"] == 1
+    }));
+    assert!(agents
+        .iter()
+        .any(|agent| agent["agent_id"] == "bot" && agent["thought_count"] == 1));
+    assert!(!agents.iter().any(|agent| agent["agent_id"] == "ghost"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dashboard_html_includes_chain_search_scaffolding() {
+    let dir = unique_chain_dir();
+    let router = dashboard_router_for_dir(&dir);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("ex-search-text"));
+    assert!(html.contains("/dashboard/api/chains/${encodeURIComponent(EX.chainKey)}/search/agents"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

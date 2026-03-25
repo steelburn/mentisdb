@@ -778,10 +778,10 @@
   // =====================================================================
   // THOUGHT EXPLORER
   // =====================================================================
-  let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc' };
+  let EX = { chainKey: null, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '' };
 
   function renderExplorer(chainKey) {
-    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [], order: 'desc' };
+    if (EX.chainKey !== chainKey) EX = { chainKey, page: 1, perPage: 50, sel: [], order: 'desc', searchText: '', searchAgentId: '' };
     const app = document.getElementById('app');
     app.innerHTML = `
       <a href="#chains" class="back-link">← Back to Chains</a>
@@ -809,6 +809,27 @@
           <div style="display:flex;gap:6px">
             <button id="ex-genesis-btn" class="btn btn-secondary btn-sm" title="Jump to oldest thought">⏮ Genesis</button>
             <button id="ex-head-btn"    class="btn btn-secondary btn-sm" title="Jump to newest thought">Head ⏭</button>
+          </div>
+        </div>
+        <div class="filter-item" style="min-width:240px;flex:1 1 240px">
+          <label>Search text</label>
+          <input
+            type="text"
+            id="ex-search-text"
+            placeholder="Search content, tags, concepts"
+            value="${esc(EX.searchText)}">
+        </div>
+        <div class="filter-item" style="min-width:220px">
+          <label>Agent ID</label>
+          <select id="ex-agent-select">
+            <option value="">All agents</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label>Search</label>
+          <div style="display:flex;gap:6px">
+            <button id="ex-search-btn" class="btn btn-primary btn-sm">Search</button>
+            <button id="ex-clear-search-btn" class="btn btn-secondary btn-sm">Clear</button>
           </div>
         </div>
         <div class="filter-item">
@@ -864,6 +885,32 @@
       loadThoughts(); window.scrollTo(0,0);
     });
 
+    document.getElementById('ex-search-btn').addEventListener('click', () => {
+      applyExplorerSearch();
+    });
+
+    document.getElementById('ex-clear-search-btn').addEventListener('click', () => {
+      EX.searchText = '';
+      EX.searchAgentId = '';
+      document.getElementById('ex-search-text').value = '';
+      document.getElementById('ex-agent-select').value = '';
+      EX.page = 1;
+      loadThoughts();
+    });
+
+    document.getElementById('ex-search-text').addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applyExplorerSearch();
+      }
+    });
+
+    document.getElementById('ex-agent-select').addEventListener('change', e => {
+      EX.searchAgentId = e.target.value;
+      EX.page = 1;
+      loadThoughts();
+    });
+
     const msBtn   = document.getElementById('ex-ms-btn');
     const msPanel = document.getElementById('ex-ms-panel');
 
@@ -892,7 +939,7 @@
       EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
     });
 
-    exUpdateLabel(); exRenderSel(); loadThoughts();
+    exUpdateLabel(); exRenderSel(); populateExplorerSearchAgents(); loadThoughts();
 
     document.getElementById('ex-import-md-btn').addEventListener('click', () => {
       openImportMarkdownModal(chainKey);
@@ -934,21 +981,68 @@
     EX.page = 1; exUpdateLabel(); exRenderSel(); loadThoughts();
   }
 
+  function explorerHasSearchFilters() {
+    return !!(EX.searchText.trim() || EX.searchAgentId);
+  }
+
+  function applyExplorerSearch() {
+    EX.searchText = document.getElementById('ex-search-text').value.trim();
+    EX.searchAgentId = document.getElementById('ex-agent-select').value;
+    EX.page = 1;
+    loadThoughts();
+  }
+
+  function populateExplorerSearchAgents() {
+    const select = document.getElementById('ex-agent-select');
+    if (!select) return;
+    select.innerHTML = '<option value="">Loading agents…</option>';
+    api(`/dashboard/api/chains/${encodeURIComponent(EX.chainKey)}/search/agents`)
+      .then(agents => {
+        const rows = Array.isArray(agents) ? agents : [];
+        const options = ['<option value="">All agents</option>'];
+        rows.forEach(agent => {
+          const value = agent.agent_id || '';
+          const display = agent.display_name && agent.display_name !== value
+            ? `${agent.display_name} (${value})`
+            : value;
+          const count = Number(agent.thought_count || 0);
+          options.push(
+            `<option value="${esc(value)}" ${EX.searchAgentId === value ? 'selected' : ''}>${esc(display)}${count ? ` · ${count}` : ''}</option>`
+          );
+        });
+        select.innerHTML = options.join('');
+        if (EX.searchAgentId && !rows.some(agent => agent.agent_id === EX.searchAgentId)) {
+          EX.searchAgentId = '';
+          select.value = '';
+        }
+      })
+      .catch(() => {
+        select.innerHTML = '<option value="">Agent list unavailable</option>';
+      });
+  }
+
   function loadThoughts() {
     const body = document.getElementById('ex-body');
     const pgEl = document.getElementById('ex-page');
     if (!body) return;
     spinner(body);
-    const { chainKey, page, perPage, sel, order } = EX;
-    let url = `/dashboard/api/chains/${encodeURIComponent(chainKey)}/thoughts?page=${page}&per_page=${perPage}&order=${order}`;
+    const { chainKey, page, perPage, sel, order, searchText, searchAgentId } = EX;
+    const searching = explorerHasSearchFilters();
+    let url = searching
+      ? `/dashboard/api/chains/${encodeURIComponent(chainKey)}/search?page=${page}&per_page=${perPage}&order=${order}`
+      : `/dashboard/api/chains/${encodeURIComponent(chainKey)}/thoughts?page=${page}&per_page=${perPage}&order=${order}`;
     if (sel.length) url += '&types=' + sel.map(encodeURIComponent).join(',');
+    if (searching && searchText) url += '&text=' + encodeURIComponent(searchText);
+    if (searching && searchAgentId) url += '&agent_id=' + encodeURIComponent(searchAgentId);
     api(url)
       .then(data => {
         const thoughts = data.thoughts || [];
         const total    = data.total    || 0;
         const pages    = data.pages    || 1;
         if (!thoughts.length) {
-          body.innerHTML = '<div class="empty-state">No thoughts match the current filter.</div>';
+          body.innerHTML = searching
+            ? '<div class="empty-state">No thoughts match this search in the current chain.</div>'
+            : '<div class="empty-state">No thoughts match the current filter.</div>';
           if (pgEl) pgEl.innerHTML = '';
           return;
         }
@@ -988,7 +1082,10 @@
           document.getElementById('ex-next')?.addEventListener('click', () => { EX.page++; loadThoughts(); window.scrollTo(0,0); });
         }
       })
-      .catch(err => { errBox(body, err.message); if (pgEl) pgEl.innerHTML = ''; });
+      .catch(err => {
+        errBox(body, searching ? `Search failed: ${err.message}` : err.message);
+        if (pgEl) pgEl.innerHTML = '';
+      });
   }
 
   // =====================================================================

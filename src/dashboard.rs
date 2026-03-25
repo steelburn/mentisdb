@@ -88,6 +88,11 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
         .route("/chains/{chain_key}", delete(api_delete_chain))
         // Thoughts for a chain
         .route("/chains/{chain_key}/thoughts", get(api_chain_thoughts))
+        .route("/chains/{chain_key}/search", get(api_chain_search))
+        .route(
+            "/chains/{chain_key}/search/agents",
+            get(api_chain_search_agents),
+        )
         // Single thought lookup
         .route("/thoughts/{chain_key}/{thought_id}", get(api_get_thought))
         // Thoughts for an agent within a chain
@@ -457,6 +462,44 @@ where
     })
 }
 
+fn paginated_thought_refs(
+    thoughts: &[&Thought],
+    page: usize,
+    per_page: usize,
+    reverse: bool,
+) -> Value {
+    let page = page.max(1);
+    let per_page = per_page.max(1);
+    let total = thoughts.len();
+    let pages = total.div_ceil(per_page);
+    let start = (page.saturating_sub(1)).saturating_mul(per_page);
+
+    let slice: Vec<&Thought> = if reverse {
+        thoughts
+            .iter()
+            .rev()
+            .skip(start)
+            .take(per_page)
+            .copied()
+            .collect()
+    } else {
+        thoughts
+            .iter()
+            .skip(start)
+            .take(per_page)
+            .copied()
+            .collect()
+    };
+
+    json!({
+        "thoughts": slice,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    })
+}
+
 fn thought_counts_by_agent(thoughts: &[Thought]) -> HashMap<&str, u64> {
     let mut counts = HashMap::new();
     for thought in thoughts {
@@ -478,6 +521,23 @@ struct ThoughtsQuery {
     types: Option<String>,
     /// Sort order: `"asc"` (oldest first) or `"desc"` (newest first, default).
     order: Option<String>,
+}
+
+/// Query parameters for chain-scoped dashboard search.
+#[derive(Deserialize, Default)]
+struct DashboardSearchQuery {
+    /// 1-based page number (defaults to 1).
+    page: Option<usize>,
+    /// Items per page (defaults to 50).
+    per_page: Option<usize>,
+    /// Comma-separated list of [`ThoughtType`] names to filter by.
+    types: Option<String>,
+    /// Sort order: `"asc"` (oldest first) or `"desc"` (newest first, default).
+    order: Option<String>,
+    /// Full-text filter over content, tags, concepts, and registry fields.
+    text: Option<String>,
+    /// Optional producing agent id.
+    agent_id: Option<String>,
 }
 
 /// Query parameters for the skill-diff endpoint.
@@ -631,10 +691,7 @@ async fn api_chain_thoughts(
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
 
-    let type_filter: Option<Vec<ThoughtType>> = params
-        .types
-        .as_deref()
-        .map(|raw| raw.split(',').filter_map(parse_thought_type).collect());
+    let type_filter = parse_type_filter(params.types.as_deref());
 
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).max(1);
@@ -652,6 +709,104 @@ async fn api_chain_thoughts(
                 .unwrap_or(true)
         },
     )))
+}
+
+/// `GET /dashboard/api/chains/:chain_key/search`
+///
+/// Returns a paginated, chain-scoped dashboard search result. This keeps the
+/// explorer workflow stable while exposing text and agent-id filters without
+/// depending on the unpaginated generic REST search surface.
+async fn api_chain_search(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+    Query(params): Query<DashboardSearchQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let chain = arc.read().await;
+
+    let mut query = ThoughtQuery::new();
+    if let Some(text) = params
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        query = query.with_text(text.to_string());
+    }
+    if let Some(agent_id) = params
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent_id| !agent_id.is_empty())
+    {
+        query = query.with_agent_ids([agent_id.to_string()]);
+    }
+    if let Some(types) = parse_type_filter(params.types.as_deref()) {
+        query = query.with_types(types);
+    }
+
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(50).max(1);
+    let reverse = params.order.as_deref().unwrap_or("desc") != "asc";
+    let matched = chain.query(&query);
+
+    Ok(Json(paginated_thought_refs(
+        matched.as_slice(),
+        page,
+        per_page,
+        reverse,
+    )))
+}
+
+/// `GET /dashboard/api/chains/:chain_key/search/agents`
+///
+/// Returns live thought authors for the chain, merged with registry display
+/// names when available. Registry-only agents without thoughts are omitted so
+/// the explorer search dropdown stays aligned with actual searchable content.
+async fn api_chain_search_agents(
+    State(state): State<DashboardState>,
+    Path(chain_key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let arc = get_or_open_chain(&state, &chain_key).await?;
+    let chain = arc.read().await;
+
+    let mut agents: Vec<(String, Option<String>, u64)> = thought_counts_by_agent(chain.thoughts())
+        .into_iter()
+        .map(|(agent_id, thought_count)| {
+            let display_name = chain
+                .agent_registry()
+                .agents
+                .get(agent_id)
+                .map(|record| record.display_name.trim().to_string())
+                .filter(|value| !value.is_empty());
+            (agent_id.to_string(), display_name, thought_count)
+        })
+        .collect();
+
+    agents.sort_by(|(left_id, left_name, _), (right_id, right_name, _)| {
+        let left_key = left_name
+            .as_deref()
+            .unwrap_or(left_id.as_str())
+            .to_ascii_lowercase();
+        let right_key = right_name
+            .as_deref()
+            .unwrap_or(right_id.as_str())
+            .to_ascii_lowercase();
+        left_key.cmp(&right_key).then_with(|| {
+            left_id
+                .to_ascii_lowercase()
+                .cmp(&right_id.to_ascii_lowercase())
+        })
+    });
+
+    Ok(Json(json!(agents
+        .into_iter()
+        .map(|(agent_id, display_name, thought_count)| json!({
+            "agent_id": agent_id,
+            "display_name": display_name,
+            "thought_count": thought_count,
+        }))
+        .collect::<Vec<_>>())))
 }
 
 /// `GET /dashboard/api/thoughts/:chain_key/:thought_id`
@@ -691,10 +846,7 @@ async fn api_agent_thoughts(
     let arc = get_or_open_chain(&state, &chain_key).await?;
     let chain = arc.read().await;
 
-    let type_filter: Option<Vec<ThoughtType>> = params
-        .types
-        .as_deref()
-        .map(|raw| raw.split(',').filter_map(parse_thought_type).collect());
+    let type_filter = parse_type_filter(params.types.as_deref());
 
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(50).max(1);
@@ -713,6 +865,10 @@ async fn api_agent_thoughts(
                     .unwrap_or(true)
         },
     )))
+}
+
+fn parse_type_filter(raw: Option<&str>) -> Option<Vec<ThoughtType>> {
+    raw.map(|raw| raw.split(',').filter_map(parse_thought_type).collect())
 }
 
 // ── API: agents ───────────────────────────────────────────────────────────────
