@@ -7,6 +7,7 @@ use crate::paths::{HostPlatform, PathEnvironment};
 use std::io::{self, BufRead, Write};
 
 use super::args::{default_url, parse_integration};
+use super::prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
 use super::setup::ensure_prerequisites;
 use super::{render_setup_plan, WizardCommand};
 
@@ -28,13 +29,11 @@ pub(super) fn run_wizard(
     let selected = if command.assume_yes {
         default_selections(&catalog)
     } else {
-        write!(
-            out,
-            "Select integrations [default: {}], 'all', or 'none': ",
+        let prompt = format!(
+            "Select integrations [default: {}], 'all', or 'none'",
             default_selection_label(&catalog)
-        )?;
-        out.flush()?;
-        let entered = read_line(input)?;
+        );
+        let entered = boxed_text_prompt(out, &prompt, input)?;
         resolve_selections(&catalog, &entered)?
     };
 
@@ -46,12 +45,11 @@ pub(super) fn run_wizard(
     let url_override = if let Some(url) = &command.url {
         Some(url.clone())
     } else {
-        write!(
+        let entered = boxed_text_prompt(
             out,
-            "Override default MentisDB URL for all selected integrations? [blank = per-integration defaults]: "
+            "Override the default MentisDB URL for all selected integrations?\n(Leave blank to use per-integration defaults)",
+            input,
         )?;
-        out.flush()?;
-        let entered = read_line(input)?;
         (!entered.trim().is_empty()).then_some(entered.trim().to_string())
     };
 
@@ -73,26 +71,16 @@ pub(super) fn run_wizard(
     for plan in planned {
         if plan.detection_status == DetectionStatus::Configured {
             if command.assume_yes {
-                writeln!(
-                    out,
-                    "{} already has a mentisdb integration. Skipping because --yes does not overwrite existing config.\n",
-                    plan.integration.display_name()
-                )?;
+                boxed_skip_notice(out, plan.integration.display_name())?;
                 continue;
             }
 
-            write!(
-                out,
-                "{} already has a mentisdb integration. [s]kip/[o]verwrite (default: skip): ",
+            let question = format!(
+                "{} already has a mentisdb integration.\nOverwrite or keep the existing config?",
                 plan.integration.display_name()
-            )?;
-            out.flush()?;
-            let decision = read_line(input)?;
-            if !matches!(
-                decision.trim().to_ascii_lowercase().as_str(),
-                "o" | "overwrite"
-            ) {
-                writeln!(out, "Skipping {}.\n", plan.integration.display_name())?;
+            );
+            let decision = boxed_yn_prompt(out, &question, false, input)?;
+            if !decision.eq_ignore_ascii_case("o") && !decision.eq_ignore_ascii_case("overwrite") {
                 continue;
             }
         }
@@ -104,14 +92,20 @@ pub(super) fn run_wizard(
         return Ok(());
     }
 
+    let default_yes = !command.assume_yes;
+    let apply_items: Vec<(String, String)> = final_plans
+        .iter()
+        .map(|plan| {
+            (
+                plan.integration.display_name().to_owned(),
+                plan.spec.config_target.path.display().to_string(),
+            )
+        })
+        .collect();
+
     if !command.assume_yes {
-        write!(out, "Apply these setup changes? [Y/n]: ")?;
-        out.flush()?;
-        let confirmation = read_line(input)?;
-        if matches!(
-            confirmation.trim().to_ascii_lowercase().as_str(),
-            "n" | "no"
-        ) {
+        let response = boxed_apply_summary(out, &apply_items, default_yes, input)?;
+        if response.eq_ignore_ascii_case("n") || response.eq_ignore_ascii_case("no") {
             writeln!(out, "\nCancelled.")?;
             return Ok(());
         }
@@ -216,10 +210,4 @@ fn parse_selection(value: &str) -> Option<IntegrationKind> {
     }
 
     parse_integration(value)
-}
-
-fn read_line(input: &mut dyn BufRead) -> io::Result<String> {
-    let mut line = String::new();
-    input.read_line(&mut line)?;
-    Ok(line.trim_end_matches(&['\r', '\n'][..]).to_string())
 }

@@ -4,10 +4,12 @@
 //! this module so the command logic stays directly testable.
 
 mod args;
+mod prompt;
 mod setup;
 mod wizard;
 
 pub use args::{parse_args, CliCommand, SetupCommand, WizardCommand};
+pub use prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
 pub use setup::render_setup_plan;
 
 use std::ffi::OsString;
