@@ -11,6 +11,8 @@ pub struct SetupCommand {
     pub url: Option<String>,
     /// Render plans but do not write files.
     pub dry_run: bool,
+    /// Apply the rendered setup plan without prompting for confirmation.
+    pub assume_yes: bool,
 }
 
 /// Parsed `wizard` subcommand arguments.
@@ -67,7 +69,7 @@ mentisdbd setup and wizard
 Usage:
   mentisdbd --help
   mentisdbd
-  mentisdbd setup <agent|all> [--url <url>] [--dry-run]
+  mentisdbd setup <agent|all> [--url <url>] [--dry-run] [--yes]
   mentisdbd wizard [--url <url>] [--yes]
 
 Supported agents:
@@ -89,11 +91,13 @@ Commands:
       mentisdbd setup codex
       mentisdbd setup claude-desktop
       mentisdbd setup all --dry-run
+      mentisdbd setup all --yes
       mentisdbd setup qwen --url http://127.0.0.1:9471
 
     Options:
       --url <url>   Override the default MentisDB MCP endpoint for the selected target(s)
       --dry-run     Print the setup plan without modifying files
+      --yes         Apply the rendered plan without the final confirmation prompt
       --help        Show this help text
 
   wizard
@@ -141,6 +145,7 @@ fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {
     };
     let mut url = None;
     let mut dry_run = false;
+    let mut assume_yes = false;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -155,6 +160,10 @@ fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {
                 dry_run = true;
                 index += 1;
             }
+            "--yes" | "-y" => {
+                assume_yes = true;
+                index += 1;
+            }
             "-h" | "--help" => return Ok(CliCommand::Help),
             other => return Err(format!("Unexpected argument '{other}' for setup")),
         }
@@ -164,6 +173,7 @@ fn parse_setup(args: Vec<String>) -> Result<CliCommand, String> {
         url,
         integrations,
         dry_run,
+        assume_yes,
     }))
 }
 

@@ -32,7 +32,7 @@ where
             let _ = write!(out, "{}", args::help_text());
             ExitCode::SUCCESS
         }
-        Ok(CliCommand::Setup(command)) => match setup::run_setup(&command, out) {
+        Ok(CliCommand::Setup(command)) => match setup::run_setup(&command, input, out) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 let _ = writeln!(err, "setup failed: {error}");

@@ -1,7 +1,18 @@
-use mentisdb::cli::{parse_args, render_setup_plan, CliCommand, SetupCommand};
+use mentisdb::cli::{parse_args, render_setup_plan, run_with_io, CliCommand, SetupCommand};
 use mentisdb::integrations::plan::build_setup_plan_for_integration;
 use mentisdb::integrations::IntegrationKind;
 use mentisdb::paths::{HostPlatform, PathEnvironment};
+use std::io::Cursor;
+use std::process::ExitCode;
+use std::sync::{Mutex, OnceLock};
+use tempfile::tempdir;
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
 
 #[test]
 fn parse_setup_command_accepts_supported_agent_and_url_override() {
@@ -20,6 +31,7 @@ fn parse_setup_command_accepts_supported_agent_and_url_override() {
             integrations: vec![IntegrationKind::Codex],
             url: Some("http://127.0.0.1:9999".to_string()),
             dry_run: false,
+            assume_yes: false,
         })
     );
 }
@@ -40,6 +52,22 @@ fn parse_setup_command_keeps_per_integration_defaults_when_url_is_omitted() {
             integrations: vec![IntegrationKind::ClaudeDesktop],
             url: None,
             dry_run: false,
+            assume_yes: false,
+        })
+    );
+}
+
+#[test]
+fn parse_setup_command_accepts_yes_flag() {
+    let parsed = parse_args(["mentisdbd", "setup", "codex", "--yes"]).unwrap();
+
+    assert_eq!(
+        parsed,
+        CliCommand::Setup(SetupCommand {
+            integrations: vec![IntegrationKind::Codex],
+            url: None,
+            dry_run: false,
+            assume_yes: true,
         })
     );
 }
@@ -123,4 +151,111 @@ fn help_text_lists_all_supported_agents_and_commands() {
     }
     assert!(text.contains("mentisdbd setup <agent|all>"));
     assert!(text.contains("mentisdbd wizard"));
+    assert!(text
+        .contains("--yes         Apply the rendered plan without the final confirmation prompt"));
+}
+
+#[test]
+fn setup_prompts_before_writing_and_can_cancel() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new("n\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdbd", "setup", "codex"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup plan"));
+    assert!(stdout.contains("Apply these setup changes?"));
+    assert!(stdout.contains("Cancelled."));
+    assert!(!home.join(".codex").join("config.toml").exists());
+}
+
+#[test]
+fn setup_can_apply_after_confirmation() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new("Y\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdbd", "setup", "codex"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup plan"));
+    assert!(stdout.contains("Apply these setup changes?"));
+    assert!(stdout.contains("Codex ->"));
+    let config = std::fs::read_to_string(home.join(".codex").join("config.toml")).unwrap();
+    assert!(config.contains("[mcp_servers.mentisdb]"));
+}
+
+#[test]
+fn setup_yes_applies_without_confirmation_prompt() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdbd", "setup", "codex", "--yes"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup plan"));
+    assert!(!stdout.contains("Apply these setup changes?"));
+    assert!(stdout.contains("Codex ->"));
 }

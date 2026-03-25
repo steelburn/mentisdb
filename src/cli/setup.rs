@@ -3,16 +3,22 @@ use crate::integrations::plan::{build_setup_plan_for_integration, SetupPlan};
 use crate::integrations::IntegrationKind;
 use crate::paths::{HostPlatform, PathEnvironment};
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
 use super::args::default_url;
+use super::prompt::boxed_apply_summary;
 use super::SetupCommand;
 
-pub(super) fn run_setup(command: &SetupCommand, out: &mut dyn Write) -> io::Result<()> {
+pub(super) fn run_setup(
+    command: &SetupCommand,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let env = PathEnvironment::capture();
     let platform = HostPlatform::current();
+    let mut plans = Vec::with_capacity(command.integrations.len());
 
     for integration in &command.integrations {
         let url = command
@@ -27,17 +33,43 @@ pub(super) fn run_setup(command: &SetupCommand, out: &mut dyn Write) -> io::Resu
                 "unsupported integration target",
             ));
         };
+        plans.push(plan);
+    }
 
-        write!(out, "{}", render_setup_plan(&plan))?;
-        if command.dry_run {
-            continue;
+    for plan in &plans {
+        write!(out, "{}", render_setup_plan(plan))?;
+    }
+
+    if command.dry_run {
+        return Ok(());
+    }
+
+    let apply_items: Vec<(String, String)> = plans
+        .iter()
+        .map(|plan| {
+            (
+                plan.integration.display_name().to_owned(),
+                plan.spec.config_target.path.display().to_string(),
+            )
+        })
+        .collect();
+
+    if !command.assume_yes {
+        let response = boxed_apply_summary(out, &apply_items, true, input)?;
+        if response.eq_ignore_ascii_case("n") || response.eq_ignore_ascii_case("no") {
+            writeln!(out, "\nCancelled.")?;
+            return Ok(());
         }
+    }
 
-        ensure_prerequisites(*integration, out)?;
-        let result = apply_setup_with_environment(*integration, url, platform, &env)?;
+    writeln!(out)?;
+    for plan in plans {
+        ensure_prerequisites(plan.integration, out)?;
+        let result = apply_setup_with_environment(plan.integration, plan.url, platform, &env)?;
         writeln!(
             out,
-            "Applied: {} ({})\n",
+            "{} -> {} ({})",
+            plan.integration.display_name(),
             result.path.display(),
             if result.changed {
                 "updated"
