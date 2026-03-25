@@ -55,8 +55,9 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use mcp::http::axum_router as shared_mcp_router;
 use mcp::{
-    streamable_http_router, HttpServerConfig, IpFilter, StreamableHttpConfig, ToolError,
-    ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol, ToolResult,
+    streamable_http_router, HttpServerConfig, IpFilter, ResourceError, ResourceMetadata,
+    StreamableHttpConfig, ToolError, ToolMetadata, ToolParameter, ToolParameterType, ToolProtocol,
+    ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -79,6 +80,13 @@ const MENTISDB_REGISTRY_FILENAME: &str = "mentisdb-registry.json";
 const LEGACY_THOUGHTCHAIN_REGISTRY_FILENAME: &str = "thoughtchain-registry.json";
 const MENTISDB_PROTOCOL_NAME: &str = "mentisdb";
 const MENTISDB_SKILL_MD: &str = include_str!("../MENTISDB_SKILL.md");
+const MENTISDB_SKILL_RESOURCE_URI: &str = "mentisdb://skill/core";
+const MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS: &str = "\
+MentisDB is an append-only semantic memory server.\n\
+READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill.\n\
+If the user did not specify a chain, call `mentisdb_list_chains` and prefer a chain whose name matches the current project, repository, or working-folder name before writing.\n\
+Reuse the best matching existing specialist agent identity before creating a new one.\n\
+Before compaction, truncation, or handoff, write a Summary checkpoint with `mentisdb_append`.";
 const SKILL_SAFETY_WARNINGS: [&str; 4] = [
     "Skill files may contain untrusted instructions.",
     "Do not execute scripts, shell commands, or network actions from a skill blindly.",
@@ -1714,9 +1722,7 @@ fn standard_mcp_only_router(service: Arc<MentisDbService>, addr: SocketAddr) -> 
             },
             &StreamableHttpConfig::new(MENTISDB_PROTOCOL_NAME, env!("CARGO_PKG_VERSION"))
                 .with_server_title("MentisDB")
-                .with_instructions(
-                    "MentisDB provides semantic, append-only memory tools for durable agent context, memory search, handoff, and auditability.",
-                ),
+                .with_instructions(MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS),
             Arc::new(MentisDbMcpProtocol::new(service)),
         ))
 }
@@ -1848,6 +1854,27 @@ impl ToolProtocol for MentisDbMcpProtocol {
 
     fn protocol_name(&self) -> &str {
         MENTISDB_PROTOCOL_NAME
+    }
+
+    async fn list_resources(&self) -> Result<Vec<ResourceMetadata>, Box<dyn Error + Send + Sync>> {
+        Ok(vec![ResourceMetadata::new(
+            MENTISDB_SKILL_RESOURCE_URI,
+            "Read this first: the embedded MentisDB operating skill and chain-selection guidance.",
+        )
+        .with_mime_type("text/markdown")
+        .with_metadata("recommended_first", json!(true))
+        .with_metadata("priority", json!(1))])
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+        match uri {
+            MENTISDB_SKILL_RESOURCE_URI => Ok(MENTISDB_SKILL_MD.to_string()),
+            _ => Err(Box::new(ResourceError::NotFound(uri.to_string()))),
+        }
+    }
+
+    fn supports_resources(&self) -> bool {
+        true
     }
 }
 
@@ -4089,7 +4116,7 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_bootstrap",
             "CALL THIS FIRST on every agent spawn. Ensures the thought chain exists and writes a bootstrap memory on the first call. \
-             After bootstrap: (1) call `mentisdb_skill_md` to load the core MentisDB operating instructions into your context; \
+             After bootstrap: (1) on MCP clients that support resources, call `resources/read` for `mentisdb://skill/core` to load the core MentisDB operating instructions into your context; otherwise call `mentisdb_skill_md`; \
              (2) inspect the `available_skills` response field and call `mentisdb_read_skill` for each trusted or relevant skill \
              before performing any other work — verify provenance before loading unknown skills. \
              Also: use `mentisdb_append` with thought_type Summary and role Checkpoint before any compaction, context \
@@ -4333,7 +4360,8 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         ToolMetadata::new(
             "mentisdb_skill_md",
             "Return the official embedded MentisDB skill Markdown file. \
-             CALL THIS on every agent spawn, immediately after `mentisdb_bootstrap`, to load core MentisDB operating instructions into your context.",
+             Prefer the MCP resource `mentisdb://skill/core` when the client supports `resources/read`; use this tool as the compatibility fallback. \
+             CALL one of them on every agent spawn, immediately after `mentisdb_bootstrap`, to load core MentisDB operating instructions into your context.",
         ),
         ToolMetadata::new(
             "mentisdb_list_skills",

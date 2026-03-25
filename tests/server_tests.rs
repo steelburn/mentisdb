@@ -2162,6 +2162,15 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     .unwrap();
     assert_eq!(initialize_json["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(initialize_json["result"]["serverInfo"]["name"], "mentisdb");
+    assert_eq!(
+        initialize_json["result"]["capabilities"]["resources"]["listChanged"],
+        json!(false)
+    );
+    let instructions = initialize_json["result"]["instructions"]
+        .as_str()
+        .expect("initialize instructions must be present");
+    assert!(instructions.contains("mentisdb://skill/core"));
+    assert!(instructions.contains("mentisdb_list_chains"));
 
     let mut initialized_request = Request::builder()
         .method("POST")
@@ -2199,7 +2208,7 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     tools_list_request
         .extensions_mut()
         .insert(ConnectInfo(client_addr));
-    let tools_list = router.oneshot(tools_list_request).await.unwrap();
+    let tools_list = router.clone().oneshot(tools_list_request).await.unwrap();
     assert_eq!(tools_list.status(), StatusCode::OK);
     let tools_json: serde_json::Value = serde_json::from_slice(
         &axum::body::to_bytes(tools_list.into_body(), usize::MAX)
@@ -2225,6 +2234,81 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
         .iter()
         .any(|tool| tool["name"] == "mentisdb_upsert_agent"));
     assert!(tools.iter().any(|tool| tool["name"] == "mentisdb_head"));
+
+    let mut resources_list_request = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("content-type", "application/json")
+        .header("MCP-Protocol-Version", "2025-06-18")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "resources/list",
+                "params": {}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    resources_list_request
+        .extensions_mut()
+        .insert(ConnectInfo(client_addr));
+    let resources_list = router
+        .clone()
+        .oneshot(resources_list_request)
+        .await
+        .unwrap();
+    assert_eq!(resources_list.status(), StatusCode::OK);
+    let resources_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resources_list.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let resources = resources_json["result"]["resources"].as_array().unwrap();
+    assert!(resources
+        .iter()
+        .any(|resource| resource["uri"] == "mentisdb://skill/core"));
+    assert!(resources
+        .iter()
+        .any(|resource| resource["metadata"]["recommended_first"] == json!(true)));
+
+    let mut resource_read_request = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("content-type", "application/json")
+        .header("MCP-Protocol-Version", "2025-06-18")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "resources/read",
+                "params": {
+                    "uri": "mentisdb://skill/core"
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    resource_read_request
+        .extensions_mut()
+        .insert(ConnectInfo(client_addr));
+    let resource_read = router.clone().oneshot(resource_read_request).await.unwrap();
+    assert_eq!(resource_read.status(), StatusCode::OK);
+    let resource_read_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resource_read.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        resource_read_json["result"]["contents"][0]["uri"],
+        "mentisdb://skill/core"
+    );
+    assert_eq!(
+        resource_read_json["result"]["contents"][0]["text"],
+        EMBEDDED_SKILL_MD
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

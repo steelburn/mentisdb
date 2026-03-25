@@ -1337,6 +1337,7 @@ The REST port defaults to `9472` (`MENTISDB_REST_PORT`). The request and respons
 ## High-Leverage Tricks
 
 - Search by project tag first, subsystem second.
+- If you must choose a chain without user guidance, call `mentisdb_list_chains` and prefer a `chain_key` whose name is closest to the current project, repository, or working-folder name. If several are plausible, inspect the recent context or head of the top candidates before writing.
 - Read `Correction` thoughts before trusting older memories in the same area.
 - Write checkpoints before interruption, not after losing context.
 - Store the replacement pattern, not just the broken pattern.
