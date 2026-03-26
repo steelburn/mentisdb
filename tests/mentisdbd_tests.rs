@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::Cursor;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::ExitCode;
 use std::sync::{Mutex, OnceLock};
 
@@ -186,6 +187,23 @@ fn setup_help_uses_the_embedded_mentisdbd_cli_surface() {
     assert!(stdout.contains("mentisdbd setup <agent|all>"));
     assert!(stdout.contains("Supported agents:"));
     assert!(!stdout.contains("mentisdbd daemon"));
+}
+
+#[test]
+fn endpoint_catalog_mentions_mcp_resources_and_ranked_lexical_search() {
+    let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9471));
+    let rest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9472));
+    let https_mcp = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9473));
+    let https_rest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9474));
+
+    let catalog =
+        mentisdbd_impl::build_endpoint_catalog(addr, rest, Some(https_mcp), Some(https_rest));
+
+    assert!(catalog.contains("mentisdb://skill/core"));
+    assert!(catalog.contains("resources/list"));
+    assert!(catalog.contains("/v1/lexical-search"));
+    assert!(catalog.contains("Ranked lexical search with scores"));
+    assert!(catalog.contains("compatibility fallback"));
 }
 
 #[cfg(feature = "startup-sound")]
