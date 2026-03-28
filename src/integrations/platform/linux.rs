@@ -9,6 +9,11 @@ pub(super) fn specs(platform: HostPlatform, env: &PathEnvironment) -> Vec<Integr
     let config_root = env
         .config_root_for(platform)
         .unwrap_or_else(|| home.join(".config"));
+    let copilot_root = env
+        .xdg_config_home
+        .clone()
+        .map(|root| root.join("copilot"))
+        .unwrap_or_else(|| home.join(".copilot"));
 
     vec![
         IntegrationSpec {
@@ -30,8 +35,8 @@ pub(super) fn specs(platform: HostPlatform, env: &PathEnvironment) -> Vec<Integr
             integration: IntegrationKind::ClaudeCode,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".claude").join("mcp").join("mentisdb.json"),
-                "User-level Claude Code MCP entry",
+                home.join(".claude").join("settings.json"),
+                "Primary Claude Code settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
@@ -39,11 +44,13 @@ pub(super) fn specs(platform: HostPlatform, env: &PathEnvironment) -> Vec<Integr
                 "Claude Code home directory",
             )],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".claude").join("settings.json"),
-                "General Claude Code settings",
+                home.join(".claude").join("mcp").join("mentisdb.json"),
+                "Legacy Claude Code per-server MCP file",
                 IntegrationFileFormat::Json,
             )],
-            notes: vec!["Linux path mapping follows ~/.claude/mcp/mentisdb.json.".into()],
+            notes: vec![
+                "Linux Claude Code MCP servers are configured under ~/.claude/settings.json (mcpServers.mentisdb); ~/.claude/mcp/mentisdb.json is treated as legacy.".into(),
+            ],
         },
         IntegrationSpec {
             integration: IntegrationKind::GeminiCli,
@@ -101,17 +108,17 @@ pub(super) fn specs(platform: HostPlatform, env: &PathEnvironment) -> Vec<Integr
             integration: IntegrationKind::CopilotCli,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".copilot").join("mcp-config.json"),
+                copilot_root.join("mcp-config.json"),
                 "GitHub Copilot CLI MCP configuration",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".copilot"),
+                copilot_root,
                 "GitHub Copilot CLI home directory",
             )],
             companion_targets: vec![],
             notes: vec![
-                "GitHub Copilot CLI stores custom MCP servers in ~/.copilot/mcp-config.json."
+                "GitHub Copilot CLI uses ~/.copilot/mcp-config.json by default and XDG_CONFIG_HOME/copilot/mcp-config.json when XDG_CONFIG_HOME is set."
                     .into(),
             ],
         },

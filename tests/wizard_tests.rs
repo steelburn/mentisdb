@@ -93,6 +93,63 @@ fn wizard_can_skip_existing_configured_entry() {
 }
 
 #[test]
+fn wizard_can_configure_claude_code_from_existing_settings_fixture() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.json");
+    let settings_before = r#"{
+  "theme": "dark",
+  "projects": {
+    "/Users/tester/workspace/mentisdb": {
+      "trust": "trusted"
+    }
+  }
+}"#;
+    std::fs::write(&settings_path, settings_before).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new("\n\nY\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = run_with_io(
+        ["mentisdbd", "wizard"],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup wizard"));
+    assert!(stdout.contains("Claude Code"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(parsed["theme"], "dark");
+    assert_eq!(
+        parsed["projects"]["/Users/tester/workspace/mentisdb"]["trust"],
+        "trusted"
+    );
+    assert_eq!(parsed["mcpServers"]["mentisdb"]["type"], "http");
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["url"],
+        "http://127.0.0.1:9471"
+    );
+    assert!(!claude_dir.join("mcp").join("mentisdb.json").exists());
+}
+
+#[test]
 fn wizard_does_not_write_unused_state_file() {
     let _guard = env_lock();
     let temp = tempdir().unwrap();

@@ -86,6 +86,110 @@ fn apply_setup_supports_jsonc_and_preserves_existing_keys() {
 }
 
 #[test]
+fn apply_setup_merges_claude_code_mcp_server_into_settings_json() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let settings_path = claude_dir.join("settings.json");
+    let settings_before = r#"{
+  "theme": "dark",
+  "projects": {
+    "/Users/tester/workspace/mentisdb": {
+      "trust": "trusted"
+    }
+  }
+}"#;
+    std::fs::write(&settings_path, settings_before).unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home.clone()),
+        current_dir: Some(temp.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+
+    let result = apply_setup_with_environment(
+        IntegrationKind::ClaudeCode,
+        "http://127.0.0.1:9471".to_string(),
+        HostPlatform::Macos,
+        &env,
+    )
+    .unwrap();
+
+    assert!(result.changed);
+    let parsed: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(parsed["theme"], "dark");
+    assert_eq!(
+        parsed["projects"]["/Users/tester/workspace/mentisdb"]["trust"],
+        "trusted"
+    );
+    assert_eq!(parsed["mcpServers"]["mentisdb"]["type"], "http");
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["url"],
+        "http://127.0.0.1:9471"
+    );
+    assert!(!claude_dir.join("mcp").join("mentisdb.json").exists());
+}
+
+#[test]
+fn apply_setup_merges_current_copilot_mcp_servers_shape() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let copilot_dir = home.join(".copilot");
+    std::fs::create_dir_all(&copilot_dir).unwrap();
+    let config_path = copilot_dir.join("mcp-config.json");
+    std::fs::write(
+        &config_path,
+        r#"{
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "gh"
+    }
+  },
+  "preferences": {
+    "theme": "dark"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home),
+        current_dir: Some(temp.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+
+    let result = apply_setup_with_environment(
+        IntegrationKind::CopilotCli,
+        "http://127.0.0.1:9471".to_string(),
+        HostPlatform::Macos,
+        &env,
+    )
+    .unwrap();
+
+    assert!(result.changed);
+    let parsed: Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(parsed["preferences"]["theme"], "dark");
+    assert_eq!(parsed["mcpServers"]["github"]["command"], "gh");
+    assert_eq!(parsed["mcpServers"]["mentisdb"]["type"], "http");
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["url"],
+        "http://127.0.0.1:9471"
+    );
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["headers"],
+        serde_json::json!({})
+    );
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["tools"],
+        serde_json::json!(["*"])
+    );
+}
+
+#[test]
 fn apply_setup_respects_https_url_override_for_non_claude_desktop() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
@@ -140,6 +244,45 @@ fn apply_setup_is_idempotent_for_qwen() {
 
     assert!(first.changed);
     assert!(!second.changed);
+}
+
+#[test]
+fn apply_setup_writes_copilot_cli_config_under_xdg_root() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let xdg_root = home.join(".config");
+    let env = PathEnvironment {
+        home_dir: Some(home.clone()),
+        xdg_config_home: Some(xdg_root.clone()),
+        current_dir: Some(temp.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+
+    let result = apply_setup_with_environment(
+        IntegrationKind::CopilotCli,
+        "http://127.0.0.1:9471".to_string(),
+        HostPlatform::Linux,
+        &env,
+    )
+    .unwrap();
+
+    assert!(result.changed);
+    let config_path = xdg_root.join("copilot").join("mcp-config.json");
+    let parsed: Value =
+        serde_json::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+    assert_eq!(parsed["mcpServers"]["mentisdb"]["type"], "http");
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["url"],
+        "http://127.0.0.1:9471"
+    );
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["headers"],
+        serde_json::json!({})
+    );
+    assert_eq!(
+        parsed["mcpServers"]["mentisdb"]["tools"],
+        serde_json::json!(["*"])
+    );
 }
 
 #[test]

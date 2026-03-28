@@ -154,9 +154,10 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
             Some(format!("claude mcp add --transport http mentisdb {url}"))
         }
         IntegrationKind::Qwen => Some(format!("qwen mcp add --transport http mentisdb {url}")),
-        IntegrationKind::CopilotCli => Some(
-            "Use `/mcp add` inside Copilot CLI or let `mentisdbd setup copilot` write ~/.copilot/mcp-config.json.".to_string(),
-        ),
+        IntegrationKind::CopilotCli => Some(format!(
+            "Use `/mcp add` inside Copilot CLI or let `mentisdbd setup copilot` write {}.",
+            spec.config_target.path.display()
+        )),
         _ => None,
     };
 
@@ -197,8 +198,10 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
                 .to_string(),
         ),
         IntegrationKind::CopilotCli => notes.push(
-            "Copilot CLI stores user MCP config in ~/.copilot/mcp-config.json."
-                .to_string(),
+            format!(
+                "Copilot CLI stores user MCP config in {}.",
+                spec.config_target.path.display()
+            ),
         ),
         _ => {}
     }
@@ -241,9 +244,15 @@ fn claude_desktop_bridge_command(platform: HostPlatform) -> &'static str {
 
 fn collect_targets(detection: &IntegrationDetection) -> Vec<SetupTarget> {
     let mut targets = Vec::with_capacity(1 + detection.spec.companion_targets.len());
+    let config_exists = detection
+        .evidence
+        .iter()
+        .find(|item| item.path == detection.spec.config_target.path)
+        .map(|item| item.exists)
+        .unwrap_or(false);
     targets.push(target_from_path_target(
         &detection.spec.config_target,
-        detection.status == DetectionStatus::Configured,
+        config_exists,
     ));
     for companion in &detection.spec.companion_targets {
         let exists = detection

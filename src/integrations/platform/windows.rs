@@ -31,8 +31,8 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::ClaudeCode,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".claude").join("mcp").join("mentisdb.json"),
-                "User-level Claude Code MCP entry",
+                home.join(".claude").join("settings.json"),
+                "Primary Claude Code settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
@@ -40,11 +40,13 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
                 "Claude Code home directory",
             )],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".claude").join("settings.json"),
-                "General Claude Code settings",
+                home.join(".claude").join("mcp").join("mentisdb.json"),
+                "Legacy Claude Code per-server MCP file",
                 IntegrationFileFormat::Json,
             )],
-            notes: vec!["Windows Claude Code support maps to %USERPROFILE%\\.claude\\mcp\\mentisdb.json.".into()],
+            notes: vec![
+                "Windows Claude Code MCP servers are configured under %USERPROFILE%\\.claude\\settings.json (mcpServers.mentisdb); %USERPROFILE%\\.claude\\mcp\\mentisdb.json is treated as legacy.".into(),
+            ],
         },
         IntegrationSpec {
             integration: IntegrationKind::GeminiCli,

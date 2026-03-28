@@ -37,6 +37,10 @@ fn macos_catalog_uses_expected_config_targets() {
             .join("opencode.json")
     );
     assert_eq!(
+        spec(&specs, IntegrationKind::ClaudeCode).config_target.path,
+        home.path().join(".claude").join("settings.json")
+    );
+    assert_eq!(
         spec(&specs, IntegrationKind::VsCodeCopilot)
             .config_target
             .path,
@@ -147,6 +151,132 @@ fn macos_detection_distinguishes_configured_and_installed() {
 }
 
 #[test]
+fn claude_code_detection_requires_mcpservers_entry_in_settings_json() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(claude_dir.join("mcp")).unwrap();
+    std::fs::write(
+        claude_dir.join("mcp").join("mentisdb.json"),
+        "{\"mcpServers\":{\"mentisdb\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:9471\"}}}",
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home.clone()),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env.clone());
+    assert_eq!(
+        report
+            .integration(IntegrationKind::ClaudeCode)
+            .unwrap()
+            .status,
+        DetectionStatus::InstalledOrUsed
+    );
+
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        "{\"mcpServers\":{\"mentisdb\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:9471\"}}}",
+    )
+    .unwrap();
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env);
+    assert_eq!(
+        report
+            .integration(IntegrationKind::ClaudeCode)
+            .unwrap()
+            .status,
+        DetectionStatus::Configured
+    );
+}
+
+#[test]
+fn claude_code_detection_treats_realistic_settings_json_as_installed_not_configured() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude").join("settings.json"),
+        r#"{
+  "theme": "dark",
+  "projects": {
+    "/Users/tester/workspace/mentisdb": {
+      "trust": "trusted"
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home.clone()),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env);
+
+    assert_eq!(
+        report
+            .integration(IntegrationKind::ClaudeCode)
+            .unwrap()
+            .status,
+        DetectionStatus::InstalledOrUsed
+    );
+
+    let catalog = build_detected_setup_catalog(report);
+    let claude = catalog.integration(IntegrationKind::ClaudeCode).unwrap();
+    assert_eq!(claude.action, SetupAction::CreateCanonicalConfig);
+    assert_eq!(
+        claude.targets[0].path,
+        home.join(".claude").join("settings.json")
+    );
+    assert!(claude.targets[0].exists);
+}
+
+#[test]
+fn copilot_detection_recognizes_current_mcp_servers_shape_as_configured() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".copilot")).unwrap();
+    std::fs::write(
+        home.join(".copilot").join("mcp-config.json"),
+        r#"{
+  "mcpServers": {
+    "mentisdb": {
+      "type": "http",
+      "url": "http://127.0.0.1:9471",
+      "headers": {},
+      "tools": ["*"]
+    },
+    "github": {
+      "type": "stdio",
+      "command": "gh"
+    }
+  }
+}"#,
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Macos, env);
+
+    assert_eq!(
+        report
+            .integration(IntegrationKind::CopilotCli)
+            .unwrap()
+            .status,
+        DetectionStatus::Configured
+    );
+}
+
+#[test]
 fn codex_detection_requires_exact_mentisdb_table_name() {
     let root = TempDir::new().unwrap();
     let home = root.path().join("home");
@@ -242,6 +372,67 @@ fn linux_and_windows_catalogs_follow_expected_roots() {
             .config_target
             .path,
         std::path::PathBuf::from("C:/Users/tester/.copilot/mcp-config.json")
+    );
+}
+
+#[test]
+fn copilot_cli_uses_xdg_config_home_when_present_on_macos() {
+    let env = PathEnvironment {
+        home_dir: Some("/Users/tester".into()),
+        xdg_config_home: Some("/Users/tester/.config".into()),
+        current_dir: Some("/tmp".into()),
+        ..PathEnvironment::default()
+    };
+    let specs = integration_specs(HostPlatform::Macos, &env);
+
+    assert_eq!(
+        spec(&specs, IntegrationKind::CopilotCli).config_target.path,
+        std::path::PathBuf::from("/Users/tester/.config/copilot/mcp-config.json")
+    );
+}
+
+#[test]
+fn copilot_cli_uses_xdg_config_home_when_present_on_linux() {
+    let env = PathEnvironment {
+        home_dir: Some("/home/tester".into()),
+        xdg_config_home: Some("/home/tester/.config".into()),
+        current_dir: Some("/tmp".into()),
+        ..PathEnvironment::default()
+    };
+    let specs = integration_specs(HostPlatform::Linux, &env);
+
+    assert_eq!(
+        spec(&specs, IntegrationKind::CopilotCli).config_target.path,
+        std::path::PathBuf::from("/home/tester/.config/copilot/mcp-config.json")
+    );
+}
+
+#[test]
+fn copilot_cli_detection_respects_xdg_config_home_path() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let xdg = home.join(".config").join("copilot");
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::fs::write(
+        xdg.join("mcp-config.json"),
+        r#"{"mcpServers":{"mentisdb":{"type":"http","url":"http://127.0.0.1:9471","tools":["*"]}}}"#,
+    )
+    .unwrap();
+
+    let env = PathEnvironment {
+        home_dir: Some(home),
+        xdg_config_home: Some(root.path().join("home").join(".config")),
+        current_dir: Some(root.path().to_path_buf()),
+        ..PathEnvironment::default()
+    };
+    let report = detect_integrations_with_environment(HostPlatform::Linux, env);
+
+    assert_eq!(
+        report
+            .integration(IntegrationKind::CopilotCli)
+            .unwrap()
+            .status,
+        DetectionStatus::Configured
     );
 }
 
