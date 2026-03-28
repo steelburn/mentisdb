@@ -347,7 +347,9 @@ High-value retrieval strategies:
 
 Use the right read tool for the job:
 
-- use `search` when you want relevant matching thoughts
+- use `ranked_search` when you have topical text and want the best matching thoughts in one ordered list
+- use `context_bundles` when you want seed-anchored supporting context grouped beneath the best lexical seeds
+- use `search` when you want deterministic metadata filtering and simple matching without ranked relevance
 - use `get_thought` when you already know the exact `id`, `hash`, or `index`
 - use `get_genesis_thought` when you want the first thought ever recorded
 - use `head` when you want the latest thought at the current chain tip
@@ -355,7 +357,9 @@ Use the right read tool for the job:
 
 This distinction matters:
 
-- search answers "what looks relevant?"
+- ranked search answers "what looks most relevant?"
+- context bundles answer "what supporting context hangs off the best matching seeds?"
+- plain search answers "what matches these semantic filters?"
 - direct lookup answers "give me this exact thought"
 - traversal answers "what came before or after this point in the ledger?"
 
@@ -843,11 +847,12 @@ Continue backward like this:
 
 A strong retrieval loop is:
 
-1. `mentisdb_search` for candidate thoughts
+1. `mentisdb_ranked_search` for candidate thoughts when you have a topical text query
 2. choose one anchor thought from the results
 3. `mentisdb_get_thought` if you need the exact full record
 4. `mentisdb_traverse_thoughts` around that anchor to recover ordered context
 
+If you need grouped support instead of a flat list, replace step 1 with `mentisdb_context_bundles`.
 That gives better context than either search-only or full-chain replay.
 
 ## Domain-Specific Guidance

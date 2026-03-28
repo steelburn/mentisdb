@@ -8,6 +8,14 @@
 - Keep derived search indexes rebuildable and optional.
 - Expose search consistently through crate APIs, MCP, REST, CLI, and dashboard surfaces.
 
+## Current Status On Master
+
+- Phase 1 is complete.
+- Phase 2 is complete in the core crate.
+- Phase 3 has not started.
+- Phase 4 is pending at the transport layer.
+- Phase 5 is pending for final dashboard wiring to the ranked core path.
+
 ## Current Baseline
 
 - Structured retrieval is good when thoughts have strong `tags`, `concepts`, `agent_id`, `agent_name`, `agent_owner`, `thought_type`, and `role` metadata.
@@ -85,6 +93,8 @@ Replace substring-only text search with real lexical retrieval and ranking.
 - Worker 2 owns query integration and tests.
 
 ## Phase 2: Search Plus Graph Expansion
+
+Status: complete in the core crate on `master` as of March 28, 2026.
 
 ### Objective
 
@@ -230,10 +240,11 @@ Expose one high-quality retrieval surface that can blend filters, lexical rankin
 - Core crate:
   - ranked search result types and query builders
 - MCP:
-  - add a new search tool for ranked retrieval
-  - optionally add a search-and-expand tool for context bundle workflows
+  - `mentisdb_ranked_search` for flat ranked retrieval
+  - `mentisdb_context_bundles` for seed-anchored grouped context
 - REST:
-  - add versioned ranked search endpoints
+  - `POST /v1/ranked-search`
+  - `POST /v1/context-bundles`
 - CLI:
   - add search inspection commands for operators and local testing
 
@@ -243,6 +254,11 @@ Expose one high-quality retrieval surface that can blend filters, lexical rankin
 - MCP and REST transport types
 - compatibility tests proving existing endpoints remain stable
 - docs for query semantics and ranking fields
+- transport acceptance tests:
+  - `tests/search_transport_contract_tests.rs`
+  - contract checks for ranked response fields (`backend`, `score`, `matched_terms`, `match_sources`, `graph_distance`, `graph_seed_paths`, `graph_relation_kinds`, `graph_path`)
+  - contract checks for grouped bundle response fields (`seed`, `support`, `relation_kinds`, `seed_path_count`, `path`, `consumed_hits`)
+  - compatibility check that plain `POST /v1/search` remains stable
 
 ### Parallel Slice
 

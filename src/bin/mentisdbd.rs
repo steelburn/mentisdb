@@ -1309,6 +1309,18 @@ pub(crate) fn build_endpoint_catalog(
         "      Ranked lexical search with scores and matched-term diagnostics."
     )
     .unwrap();
+    writeln!(&mut out, "    POST http://{rest_addr}/v1/ranked-search").unwrap();
+    writeln!(
+        &mut out,
+        "      Flat ranked search with optional graph-aware expansion scoring."
+    )
+    .unwrap();
+    writeln!(&mut out, "    POST http://{rest_addr}/v1/context-bundles").unwrap();
+    writeln!(
+        &mut out,
+        "      Seed-anchored grouped context bundles for agent reasoning."
+    )
+    .unwrap();
     writeln!(&mut out, "    POST http://{rest_addr}/v1/recent-context").unwrap();
     writeln!(&mut out, "      Render a recent-context prompt snippet.").unwrap();
     writeln!(&mut out, "    POST http://{rest_addr}/v1/memory-markdown").unwrap();
@@ -1525,6 +1537,26 @@ pub(crate) fn build_endpoint_catalog(
         writeln!(
             &mut out,
             "      Ranked lexical search with scores and matched-term diagnostics."
+        )
+        .unwrap();
+        writeln!(
+            &mut out,
+            "    POST https://{https_rest_addr}/v1/ranked-search"
+        )
+        .unwrap();
+        writeln!(
+            &mut out,
+            "      Flat ranked search with optional graph-aware expansion scoring."
+        )
+        .unwrap();
+        writeln!(
+            &mut out,
+            "    POST https://{https_rest_addr}/v1/context-bundles"
+        )
+        .unwrap();
+        writeln!(
+            &mut out,
+            "      Seed-anchored grouped context bundles for agent reasoning."
         )
         .unwrap();
         writeln!(

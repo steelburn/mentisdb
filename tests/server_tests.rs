@@ -258,6 +258,15 @@ async fn mcp_router_lists_mentisdb_tools() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "mentisdb_revoke_skill"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "mentisdb_lexical_search"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "mentisdb_ranked_search"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "mentisdb_context_bundles"));
     assert!(tools.iter().any(|tool| tool["name"] == "mentisdb_skill_md"));
     assert!(tools
         .iter()
@@ -342,6 +351,30 @@ async fn mcp_router_lists_mentisdb_tools() {
     assert!(traverse_parameters
         .iter()
         .any(|parameter| parameter["name"] == "time_window"));
+
+    let ranked = tools
+        .iter()
+        .find(|tool| tool["name"] == "mentisdb_ranked_search")
+        .unwrap();
+    let ranked_parameters = ranked["parameters"].as_array().unwrap();
+    assert!(ranked_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "graph"));
+    assert!(ranked_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "offset"));
+
+    let bundles = tools
+        .iter()
+        .find(|tool| tool["name"] == "mentisdb_context_bundles")
+        .unwrap();
+    let bundle_parameters = bundles["parameters"].as_array().unwrap();
+    assert!(bundle_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "text"));
+    assert!(bundle_parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "graph"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2171,6 +2204,8 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
         .expect("initialize instructions must be present");
     assert!(instructions.contains("mentisdb://skill/core"));
     assert!(instructions.contains("mentisdb_list_chains"));
+    assert!(instructions.contains("mentisdb_ranked_search"));
+    assert!(instructions.contains("mentisdb_context_bundles"));
 
     let mut initialized_request = Request::builder()
         .method("POST")
@@ -2650,6 +2685,324 @@ async fn rest_lexical_search_can_match_agent_registry_text() {
         .unwrap()
         .iter()
         .any(|value| value == "agent_registry"));
+}
+
+#[tokio::test]
+async fn rest_ranked_search_returns_graph_aware_results() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "server-ranked",
+        StorageAdapterKind::Jsonl,
+    ));
+    let chain_key = "server-ranked";
+    let _seed = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "ranked-bot",
+        "Decision",
+        None,
+        "Latency ranking seed for graph-aware transport.",
+    )
+    .await;
+    let support_append = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "ranked-bot",
+                        "thought_type": "Summary",
+                        "content": "Supporting context reachable through relations.",
+                        "refs": [0]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(support_append.status(), StatusCode::OK);
+
+    let payload = json!({
+        "chain_key": chain_key,
+        "text": "latency ranking",
+        "limit": 10,
+        "offset": 0,
+        "graph": {
+            "mode": "incoming_only",
+            "max_depth": 1
+        }
+    });
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ranked-search")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["backend"], "lexical_graph");
+    assert_eq!(parsed["total"], 2);
+    let results = parsed["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results[0]["score"]["total"].as_f64().unwrap_or(0.0) > 0.0);
+
+    let supporting = results
+        .iter()
+        .find(|hit| hit["thought"]["content"] == "Supporting context reachable through relations.")
+        .unwrap();
+    assert_eq!(supporting["graph_distance"], 1);
+    assert!(supporting["graph_seed_paths"].as_u64().unwrap_or(0) >= 1);
+    assert!(supporting["graph_relation_kinds"].is_array());
+    assert!(supporting["score"]["graph"].as_f64().unwrap_or(0.0) > 0.0);
+    assert!(supporting["score"]["relation"].as_f64().unwrap_or(0.0) > 0.0);
+}
+
+#[tokio::test]
+async fn rest_context_bundles_returns_seed_anchored_groups() {
+    let dir = unique_chain_dir();
+    let router = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        "server-bundles",
+        StorageAdapterKind::Jsonl,
+    ));
+    let chain_key = "server-bundles";
+
+    let _seed_a = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "bundle-bot",
+        "Decision",
+        None,
+        "Alpha seed for context bundling.",
+    )
+    .await;
+    let _seed_b = append_thought_via_rest(
+        router.clone(),
+        chain_key,
+        "bundle-bot",
+        "Decision",
+        None,
+        "Beta seed for context bundling.",
+    )
+    .await;
+
+    for (content, ref_index) in [
+        ("Alpha support thought", 0_u64),
+        ("Beta support thought", 1_u64),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/thoughts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "chain_key": chain_key,
+                            "agent_id": "bundle-bot",
+                            "thought_type": "Summary",
+                            "content": content,
+                            "refs": [ref_index]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let payload = json!({
+        "chain_key": chain_key,
+        "text": "seed context bundling",
+        "limit": 10,
+        "offset": 0,
+        "graph": {
+            "mode": "incoming_only",
+            "max_depth": 1
+        }
+    });
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/context-bundles")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(parsed["total_bundles"], 2);
+    assert!(parsed["consumed_hits"].as_u64().unwrap_or(0) >= 2);
+    let bundles = parsed["bundles"].as_array().unwrap();
+    assert_eq!(bundles.len(), 2);
+    for bundle in bundles {
+        assert!(bundle["seed"]["thought"].is_object());
+        let support = bundle["support"].as_array().unwrap();
+        assert_eq!(support.len(), 1);
+        assert_eq!(support[0]["depth"], 1);
+        assert!(support[0]["relation_kinds"].is_array());
+    }
+}
+
+#[tokio::test]
+async fn mcp_ranked_search_and_context_bundles_are_executable() {
+    let dir = unique_chain_dir();
+    let chain_key = "mcp-ranked";
+    let rest = rest_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+    let mcp = mcp_router(MentisDbServiceConfig::new(
+        dir.clone(),
+        chain_key,
+        StorageAdapterKind::Jsonl,
+    ));
+
+    let _seed = append_thought_via_rest(
+        rest.clone(),
+        chain_key,
+        "mcp-bot",
+        "Decision",
+        None,
+        "Seed thought for MCP ranked search.",
+    )
+    .await;
+    let _ = rest
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/thoughts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "chain_key": chain_key,
+                        "agent_id": "mcp-bot",
+                        "thought_type": "Summary",
+                        "content": "MCP support thought",
+                        "refs": [0]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let ranked = mcp
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/execute")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "tool": "mentisdb_ranked_search",
+                        "parameters": {
+                            "chain_key": chain_key,
+                            "text": "seed thought",
+                            "graph": {
+                                "mode": "incoming_only",
+                                "max_depth": 1
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ranked.status(), StatusCode::OK);
+    let ranked_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(ranked.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ranked_json["result"]["success"], true);
+    assert_eq!(ranked_json["result"]["output"]["backend"], "lexical_graph");
+    assert!(
+        ranked_json["result"]["output"]["results"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 2
+    );
+
+    let bundles = mcp
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tools/execute")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "tool": "mentisdb_context_bundles",
+                        "parameters": {
+                            "chain_key": chain_key,
+                            "text": "seed thought",
+                            "graph": {
+                                "mode": "incoming_only",
+                                "max_depth": 1
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundles.status(), StatusCode::OK);
+    let bundles_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(bundles.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bundles_json["result"]["success"], true);
+    assert!(
+        bundles_json["result"]["output"]["total_bundles"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(bundles_json["result"]["output"]["bundles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|bundle| bundle["support"].is_array()));
 }
 
 #[tokio::test]

@@ -19,6 +19,8 @@
 //! - `POST /v1/retrospectives`
 //! - `POST /v1/search`
 //! - `POST /v1/lexical-search`
+//! - `POST /v1/ranked-search`
+//! - `POST /v1/context-bundles`
 //! - `POST /v1/recent-context`
 //! - `POST /v1/memory-markdown`
 //! - `POST /v1/thought`
@@ -39,11 +41,11 @@
 
 use crate::{
     load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus,
-    SkillSummary, SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput,
-    ThoughtQuery, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor,
-    ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
-    MENTISDB_CURRENT_VERSION,
+    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry,
+    SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload, SkillVersionSummary,
+    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole,
+    ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
+    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -85,6 +87,7 @@ const MENTISDB_MCP_BOOTSTRAP_INSTRUCTIONS: &str = "\
 MentisDB is an append-only semantic memory server.\n\
 READ THIS FIRST: call `resources/read` for `mentisdb://skill/core` immediately after initialize to load the embedded MentisDB operating skill.\n\
 If the user did not specify a chain, call `mentisdb_list_chains` and prefer a chain whose name matches the current project, repository, or working-folder name before writing.\n\
+When searching memory, use `mentisdb_ranked_search` for the best flat matches and `mentisdb_context_bundles` when you need seed-anchored supporting context grouped beneath the best lexical seeds.\n\
 Reuse the best matching existing specialist agent identity before creating a new one.\n\
 Before compaction, truncation, or handoff, write a Summary checkpoint with `mentisdb_append`.";
 const SKILL_SAFETY_WARNINGS: [&str; 4] = [
@@ -1365,6 +1368,8 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
         )
         .route("/v1/search", post(rest_search_handler))
         .route("/v1/lexical-search", post(rest_lexical_search_handler))
+        .route("/v1/ranked-search", post(rest_ranked_search_handler))
+        .route("/v1/context-bundles", post(rest_context_bundles_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -1525,7 +1530,8 @@ pub fn standard_mcp_router(config: MentisDbServiceConfig) -> Router {
 /// - `GET /v1/skills` · `GET /v1/skills/manifest`
 /// - `POST /v1/bootstrap`
 /// - `POST /v1/thoughts` · `POST /v1/retrospectives`
-/// - `POST /v1/search` · `POST /v1/recent-context` · `POST /v1/memory-markdown`
+/// - `POST /v1/search` · `POST /v1/lexical-search` · `POST /v1/ranked-search` · `POST /v1/context-bundles`
+/// - `POST /v1/recent-context` · `POST /v1/memory-markdown`
 /// - `POST /v1/thought` · `POST /v1/thoughts/genesis` · `POST /v1/thoughts/traverse`
 /// - `POST /v1/head`
 /// - `POST /v1/agents` · `POST /v1/agent` · `POST /v1/agent-registry`
@@ -1588,6 +1594,8 @@ pub fn rest_router(config: MentisDbServiceConfig) -> Router {
         )
         .route("/v1/search", post(rest_search_handler))
         .route("/v1/lexical-search", post(rest_lexical_search_handler))
+        .route("/v1/ranked-search", post(rest_ranked_search_handler))
+        .route("/v1/context-bundles", post(rest_context_bundles_handler))
         .route("/v1/recent-context", post(rest_recent_context_handler))
         .route("/v1/memory-markdown", post(rest_memory_markdown_handler))
         .route("/v1/import-markdown", post(rest_import_markdown_handler))
@@ -1749,6 +1757,15 @@ impl ToolProtocol for MentisDbMcpProtocol {
             }
             "mentisdb_search" => {
                 parse_and_call(parameters, |request| self.service.search(request)).await
+            }
+            "mentisdb_lexical_search" => {
+                parse_and_call(parameters, |request| self.service.lexical_search(request)).await
+            }
+            "mentisdb_ranked_search" => {
+                parse_and_call(parameters, |request| self.service.ranked_search(request)).await
+            }
+            "mentisdb_context_bundles" => {
+                parse_and_call(parameters, |request| self.service.context_bundles(request)).await
             }
             "mentisdb_list_chains" => self.service.list_chains_json().await,
             "mentisdb_list_agents" => {
@@ -2224,6 +2241,159 @@ impl MentisDbService {
             })
             .collect();
         Ok(LexicalSearchResponse { results, total })
+    }
+
+    async fn ranked_search(
+        &self,
+        request: RankedSearchRequest,
+    ) -> Result<RankedSearchResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let filter = build_ranked_filter_query(&request, chain_key.clone())?;
+        let offset = request.offset.unwrap_or(0);
+        let page_size = request
+            .limit
+            .unwrap_or_else(|| chain.thoughts().len().max(1))
+            .max(1);
+        let ranked_limit = offset.saturating_add(page_size).max(1);
+        let mut ranked_query = RankedSearchQuery::new()
+            .with_filter(filter)
+            .with_limit(ranked_limit);
+        if let Some(text) = request
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            ranked_query = ranked_query.with_text(text.to_string());
+        }
+        if let Some(graph) = &request.graph {
+            ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+
+        let ranked = chain.query_ranked(&ranked_query);
+        let total = ranked.total_candidates;
+        let results = ranked
+            .hits
+            .into_iter()
+            .skip(offset)
+            .take(page_size)
+            .map(|hit| RankedSearchHitResponse {
+                thought: thought_to_json(&chain, hit.thought),
+                score: RankedSearchScoreResponse {
+                    lexical: hit.score.lexical,
+                    graph: hit.score.graph,
+                    relation: hit.score.relation,
+                    seed_support: hit.score.seed_support,
+                    importance: hit.score.importance,
+                    confidence: hit.score.confidence,
+                    recency: hit.score.recency,
+                    total: hit.score.total,
+                },
+                matched_terms: hit.matched_terms,
+                match_sources: hit
+                    .match_sources
+                    .into_iter()
+                    .map(|source| source.as_str().to_string())
+                    .collect(),
+                graph_distance: hit.graph_distance,
+                graph_seed_paths: hit.graph_seed_paths,
+                graph_relation_kinds: hit
+                    .graph_relation_kinds
+                    .into_iter()
+                    .map(relation_kind_label)
+                    .map(str::to_string)
+                    .collect(),
+                graph_path: hit
+                    .graph_path
+                    .as_ref()
+                    .map(transport_graph_path_from_core_path),
+            })
+            .collect();
+        Ok(RankedSearchResponse {
+            backend: ranked.backend.as_str().to_string(),
+            total,
+            results,
+        })
+    }
+
+    async fn context_bundles(
+        &self,
+        request: RankedSearchRequest,
+    ) -> Result<ContextBundlesResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let chain = chain.read().await;
+        let filter = build_ranked_filter_query(&request, chain_key.clone())?;
+        let offset = request.offset.unwrap_or(0);
+        let page_size = request
+            .limit
+            .unwrap_or_else(|| chain.thoughts().len().max(1))
+            .max(1);
+        let bundle_limit = offset.saturating_add(page_size).max(1);
+        let mut ranked_query = RankedSearchQuery::new()
+            .with_filter(filter)
+            .with_limit(bundle_limit);
+        if let Some(text) = request
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            ranked_query = ranked_query.with_text(text.to_string());
+        }
+        if let Some(graph) = &request.graph {
+            ranked_query = ranked_query.with_graph(parse_ranked_graph_request(graph)?);
+        }
+
+        let bundled = chain.query_context_bundles(&ranked_query);
+        let total_bundles = bundled.bundles.len();
+        let bundles = bundled
+            .bundles
+            .into_iter()
+            .skip(offset)
+            .take(page_size)
+            .map(|bundle| {
+                let seed_locator = transport_locator(&bundle.seed.locator);
+                let seed_thought = thought_json_for_locator(&chain, &bundle.seed.locator);
+                let support = bundle
+                    .support
+                    .into_iter()
+                    .map(|support_hit| {
+                        let locator = transport_locator(&support_hit.locator);
+                        ContextBundleHitResponse {
+                            locator,
+                            thought: thought_json_for_locator(&chain, &support_hit.locator),
+                            depth: support_hit.depth,
+                            seed_path_count: support_hit.seed_path_count,
+                            relation_kinds: support_hit
+                                .relation_kinds
+                                .into_iter()
+                                .map(relation_kind_label)
+                                .map(str::to_string)
+                                .collect(),
+                            path: transport_graph_path_from_core_path(&support_hit.path),
+                        }
+                    })
+                    .collect();
+                ContextBundleItemResponse {
+                    seed: ContextBundleSeedResponse {
+                        locator: seed_locator,
+                        lexical_score: bundle.seed.lexical_score,
+                        matched_terms: bundle.seed.matched_terms,
+                        thought: seed_thought,
+                    },
+                    support,
+                }
+            })
+            .collect();
+
+        Ok(ContextBundlesResponse {
+            total_bundles,
+            consumed_hits: bundled.consumed_hits,
+            bundles,
+        })
     }
 
     async fn list_chains_json(&self) -> Result<Value, Box<dyn Error + Send + Sync>> {
@@ -3284,6 +3454,110 @@ struct LexicalSearchResponse {
     total: usize,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct RankedSearchRequest {
+    chain_key: Option<String>,
+    text: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    graph: Option<RankedSearchGraphRequest>,
+    thought_types: Option<Vec<String>>,
+    roles: Option<Vec<String>>,
+    tags_any: Option<Vec<String>>,
+    concepts_any: Option<Vec<String>>,
+    agent_ids: Option<Vec<String>>,
+    agent_names: Option<Vec<String>>,
+    agent_owners: Option<Vec<String>>,
+    min_importance: Option<f32>,
+    min_confidence: Option<f32>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RankedSearchGraphRequest {
+    max_depth: Option<usize>,
+    max_visited: Option<usize>,
+    include_seeds: Option<bool>,
+    mode: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RankedSearchScoreResponse {
+    lexical: f32,
+    graph: f32,
+    relation: f32,
+    seed_support: f32,
+    importance: f32,
+    confidence: f32,
+    recency: f32,
+    total: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct TransportThoughtLocator {
+    chain_key: Option<String>,
+    thought_id: Uuid,
+    thought_index: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct TransportGraphPath {
+    seed: TransportThoughtLocator,
+    visited: Vec<TransportThoughtLocator>,
+    depth: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RankedSearchHitResponse {
+    thought: Value,
+    score: RankedSearchScoreResponse,
+    matched_terms: Vec<String>,
+    match_sources: Vec<String>,
+    graph_distance: Option<usize>,
+    graph_seed_paths: usize,
+    graph_relation_kinds: Vec<String>,
+    graph_path: Option<TransportGraphPath>,
+}
+
+#[derive(Debug, Serialize)]
+struct RankedSearchResponse {
+    backend: String,
+    total: usize,
+    results: Vec<RankedSearchHitResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextBundleSeedResponse {
+    locator: TransportThoughtLocator,
+    lexical_score: f32,
+    matched_terms: Vec<String>,
+    thought: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextBundleHitResponse {
+    locator: TransportThoughtLocator,
+    thought: Option<Value>,
+    depth: usize,
+    seed_path_count: usize,
+    relation_kinds: Vec<String>,
+    path: TransportGraphPath,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextBundleItemResponse {
+    seed: ContextBundleSeedResponse,
+    support: Vec<ContextBundleHitResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextBundlesResponse {
+    total_bundles: usize,
+    consumed_hits: usize,
+    bundles: Vec<ContextBundleItemResponse>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GetThoughtRequest {
     chain_key: Option<String>,
@@ -3838,6 +4112,20 @@ async fn rest_lexical_search_handler(
     service_call(service.lexical_search(request).await)
 }
 
+async fn rest_ranked_search_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<RankedSearchRequest>,
+) -> Result<Json<RankedSearchResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.ranked_search(request).await)
+}
+
+async fn rest_context_bundles_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<RankedSearchRequest>,
+) -> Result<Json<ContextBundlesResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.context_bundles(request).await)
+}
+
 async fn rest_list_chains_handler(
     State(service): State<Arc<MentisDbService>>,
 ) -> Result<Json<ListChainsResponse>, (StatusCode, Json<Value>)> {
@@ -4223,6 +4511,46 @@ fn mcp_tool_metadata() -> Vec<ToolMetadata> {
         .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
         .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String)),
         ToolMetadata::new(
+            "mentisdb_ranked_search",
+            "Run flat ranked retrieval over RankedSearchQuery semantics, including optional graph-aware lexical expansion scoring. Use this when you want the best matching thoughts in one ordered list.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Optional lexical query text used for ranking."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of results to return."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Result offset for paging."))
+        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("concepts_any", ToolParameterType::Array).with_description("Optional concepts to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_names", ToolParameterType::Array).with_description("Optional producing agent names to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_owners", ToolParameterType::Array).with_description("Optional producing agent owners to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("min_importance", ToolParameterType::Number).with_description("Optional minimum importance threshold."))
+        .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
+        .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
+        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound.")),
+        ToolMetadata::new(
+            "mentisdb_context_bundles",
+            "Return deterministic seed-anchored grouped context bundles over query_context_bundles. Use this when you want supporting context grouped beneath the best lexical seed thoughts.",
+        )
+        .with_parameter(ToolParameter::new("chain_key", ToolParameterType::String).with_description("Optional durable chain key."))
+        .with_parameter(ToolParameter::new("text", ToolParameterType::String).with_description("Lexical query text used to derive seed thoughts."))
+        .with_parameter(ToolParameter::new("limit", ToolParameterType::Integer).with_description("Maximum number of bundles to return."))
+        .with_parameter(ToolParameter::new("offset", ToolParameterType::Integer).with_description("Bundle offset for paging."))
+        .with_parameter(ToolParameter::new("graph", ToolParameterType::Object).with_description("Optional graph expansion config object: max_depth, max_visited, include_seeds, mode."))
+        .with_parameter(ToolParameter::new("thought_types", ToolParameterType::Array).with_description("Optional list of ThoughtType names to include.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("roles", ToolParameterType::Array).with_description("Optional list of ThoughtRole names.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("tags_any", ToolParameterType::Array).with_description("Optional tags to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("concepts_any", ToolParameterType::Array).with_description("Optional concepts to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_ids", ToolParameterType::Array).with_description("Optional producing agent ids to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_names", ToolParameterType::Array).with_description("Optional producing agent names to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("agent_owners", ToolParameterType::Array).with_description("Optional producing agent owners to match.").with_items(ToolParameterType::String))
+        .with_parameter(ToolParameter::new("min_importance", ToolParameterType::Number).with_description("Optional minimum importance threshold."))
+        .with_parameter(ToolParameter::new("min_confidence", ToolParameterType::Number).with_description("Optional minimum confidence threshold."))
+        .with_parameter(ToolParameter::new("since", ToolParameterType::String).with_description("Optional RFC 3339 lower timestamp bound."))
+        .with_parameter(ToolParameter::new("until", ToolParameterType::String).with_description("Optional RFC 3339 upper timestamp bound.")),
+        ToolMetadata::new(
             "mentisdb_list_chains",
             "List the durable chain keys currently available in MentisDb storage, together with the server default chain key.",
         ),
@@ -4495,6 +4823,65 @@ fn build_query(request: &SearchRequest) -> Result<ThoughtQuery, Box<dyn Error + 
     }
 
     Ok(query)
+}
+
+fn build_ranked_filter_query(
+    request: &RankedSearchRequest,
+    chain_key: String,
+) -> Result<ThoughtQuery, Box<dyn Error + Send + Sync>> {
+    build_query(&SearchRequest {
+        chain_key: Some(chain_key),
+        text: None,
+        thought_types: request.thought_types.clone(),
+        roles: request.roles.clone(),
+        tags_any: request.tags_any.clone(),
+        concepts_any: request.concepts_any.clone(),
+        agent_ids: request.agent_ids.clone(),
+        agent_names: request.agent_names.clone(),
+        agent_owners: request.agent_owners.clone(),
+        min_importance: request.min_importance,
+        min_confidence: request.min_confidence,
+        since: request.since,
+        until: request.until,
+        limit: None,
+    })
+}
+
+fn parse_ranked_graph_request(
+    graph: &RankedSearchGraphRequest,
+) -> Result<RankedSearchGraph, Box<dyn Error + Send + Sync>> {
+    let mut parsed = RankedSearchGraph::new();
+    if let Some(max_depth) = graph.max_depth {
+        parsed = parsed.with_max_depth(max_depth);
+    }
+    if let Some(max_visited) = graph.max_visited {
+        parsed = parsed.with_max_visited(max_visited);
+    }
+    if let Some(include_seeds) = graph.include_seeds {
+        parsed = parsed.with_include_seeds(include_seeds);
+    }
+    if let Some(mode) = graph.mode.as_deref() {
+        parsed = parsed.with_mode(parse_graph_expansion_mode(mode)?);
+    }
+    Ok(parsed)
+}
+
+fn parse_graph_expansion_mode(
+    input: &str,
+) -> Result<crate::search::GraphExpansionMode, Box<dyn Error + Send + Sync>> {
+    let normalized = normalize_label(input);
+    match normalized.as_str() {
+        "outgoing" | "outgoingonly" => Ok(crate::search::GraphExpansionMode::OutgoingOnly),
+        "incoming" | "incomingonly" => Ok(crate::search::GraphExpansionMode::IncomingOnly),
+        "bidirectional" => Ok(crate::search::GraphExpansionMode::Bidirectional),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Unsupported graph mode '{input}'. Expected outgoing_only, incoming_only, or bidirectional."
+            ),
+        )
+        .into()),
+    }
 }
 
 fn build_markdown_query(
@@ -4795,6 +5182,61 @@ fn thought_to_json(chain: &MentisDb, thought: &Thought) -> Value {
     chain.thought_json(thought)
 }
 
+fn thought_json_for_locator(
+    chain: &MentisDb,
+    locator: &crate::search::ThoughtLocator,
+) -> Option<Value> {
+    if locator.chain_key.is_some() {
+        return None;
+    }
+    if let Some(index) = locator.thought_index {
+        if let Some(thought) = chain.thoughts().get(index as usize) {
+            if thought.id == locator.thought_id {
+                return Some(thought_to_json(chain, thought));
+            }
+        }
+    }
+    chain
+        .thoughts()
+        .iter()
+        .find(|thought| thought.id == locator.thought_id)
+        .map(|thought| thought_to_json(chain, thought))
+}
+
+fn transport_locator(locator: &crate::search::ThoughtLocator) -> TransportThoughtLocator {
+    TransportThoughtLocator {
+        chain_key: locator.chain_key.clone(),
+        thought_id: locator.thought_id,
+        thought_index: locator.thought_index,
+    }
+}
+
+fn transport_graph_path_from_core_path(
+    path: &crate::search::GraphExpansionPath,
+) -> TransportGraphPath {
+    TransportGraphPath {
+        seed: transport_locator(&path.seed),
+        visited: path.visited().into_iter().map(transport_locator).collect(),
+        depth: path.depth(),
+    }
+}
+
+fn relation_kind_label(kind: ThoughtRelationKind) -> &'static str {
+    match kind {
+        ThoughtRelationKind::References => "references",
+        ThoughtRelationKind::Summarizes => "summarizes",
+        ThoughtRelationKind::Corrects => "corrects",
+        ThoughtRelationKind::Invalidates => "invalidates",
+        ThoughtRelationKind::CausedBy => "caused_by",
+        ThoughtRelationKind::Supports => "supports",
+        ThoughtRelationKind::Contradicts => "contradicts",
+        ThoughtRelationKind::DerivedFrom => "derived_from",
+        ThoughtRelationKind::ContinuesFrom => "continues_from",
+        ThoughtRelationKind::RelatedTo => "related_to",
+        ThoughtRelationKind::Supersedes => "supersedes",
+    }
+}
+
 fn normalize_label(input: &str) -> String {
     input
         .chars()
@@ -4901,6 +5343,9 @@ fn canonical_tool_name(tool_name: &str) -> &str {
         "thoughtchain_append" => "mentisdb_append",
         "thoughtchain_append_retrospective" => "mentisdb_append_retrospective",
         "thoughtchain_search" => "mentisdb_search",
+        "thoughtchain_lexical_search" => "mentisdb_lexical_search",
+        "thoughtchain_ranked_search" => "mentisdb_ranked_search",
+        "thoughtchain_context_bundles" => "mentisdb_context_bundles",
         "thoughtchain_list_chains" => "mentisdb_list_chains",
         "thoughtchain_list_agents" => "mentisdb_list_agents",
         "thoughtchain_get_agent" => "mentisdb_get_agent",

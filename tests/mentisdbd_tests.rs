@@ -190,7 +190,7 @@ fn setup_help_uses_the_embedded_mentisdbd_cli_surface() {
 }
 
 #[test]
-fn endpoint_catalog_mentions_mcp_resources_and_ranked_lexical_search() {
+fn endpoint_catalog_mentions_mcp_resources_and_ranked_search_surfaces() {
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9471));
     let rest = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9472));
     let https_mcp = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9473));
@@ -203,6 +203,10 @@ fn endpoint_catalog_mentions_mcp_resources_and_ranked_lexical_search() {
     assert!(catalog.contains("resources/list"));
     assert!(catalog.contains("/v1/lexical-search"));
     assert!(catalog.contains("Ranked lexical search with scores"));
+    assert!(catalog.contains("/v1/ranked-search"));
+    assert!(catalog.contains("Flat ranked search with optional graph-aware expansion scoring."));
+    assert!(catalog.contains("/v1/context-bundles"));
+    assert!(catalog.contains("Seed-anchored grouped context bundles for agent reasoning."));
     assert!(catalog.contains("compatibility fallback"));
 }
 

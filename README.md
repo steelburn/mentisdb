@@ -435,6 +435,7 @@ MentisDB now also exposes an additive ranked-search surface for direct crate use
 
 - `RankedSearchQuery`
 - `RankedSearchGraph`
+- `MentisDb::query_context_bundles(&RankedSearchQuery)`
 - `MentisDb::query_ranked(&RankedSearchQuery)`
 - `RankedSearchBackend::{Lexical, LexicalGraph, Heuristic}`
 
@@ -453,7 +454,8 @@ Current ranked-search behavior:
 - heuristic ordering uses lightweight importance, confidence, and recency signals
 - `total_candidates` counts the hits after filter application and lexical gating, before final `limit` truncation
 - each ranked hit includes `matched_terms` plus `match_sources` such as `content`, `tags`, `concepts`, `agent_id`, and `agent_registry`
-- graph-expanded hits also expose `graph_distance` and `graph_path` provenance so callers can explain why a supporting thought surfaced
+- graph-expanded hits also expose `graph_distance`, `graph_seed_paths`, `graph_relation_kinds`, and `graph_path` provenance so callers can explain why a supporting thought surfaced
+- grouped context delivery is available through `query_context_bundles`, which anchors supporting graph hits beneath lexical seeds in deterministic order
 
 Example:
 
@@ -485,11 +487,38 @@ let results = chain.query_ranked(&ranked);
 # }
 ```
 
+Grouped context example:
+
+```rust,no_run
+use mentisdb::{MentisDb, RankedSearchGraph, RankedSearchQuery, ThoughtQuery};
+use mentisdb::search::GraphExpansionMode;
+use std::path::PathBuf;
+
+# fn main() -> std::io::Result<()> {
+let chain = MentisDb::open(&PathBuf::from("/tmp/tc_ranked"), "agent1", "Agent", None, None)?;
+
+let bundles = chain.query_context_bundles(
+    &RankedSearchQuery::new()
+        .with_filter(ThoughtQuery::new().with_tags_any(["search"]))
+        .with_text("latency ranking")
+        .with_graph(
+            RankedSearchGraph::new()
+                .with_mode(GraphExpansionMode::Bidirectional)
+                .with_max_depth(2),
+        )
+        .with_limit(5),
+);
+# let _ = bundles;
+# Ok(())
+# }
+```
+
 Product rule:
 
 - keep `ThoughtQuery` stable and explainable for append-order filtering
 - evolve ranked search as a separate surface with its own benchmarks, tests, and transport layers
 - treat registry-aware filtering and future transport exposure as additive work on top of the current crate API
+- use `query_ranked` for flat ranked retrieval and `query_context_bundles` when the caller wants seed-anchored support context instead of one mixed list
 
 The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `tests/search_ranked_eval_tests.rs` are the guardrails for that additive surface.
 
@@ -509,6 +538,41 @@ Request shape:
   "limit": 10
 }
 ```
+
+### Phase 4 Transport Contract (Ranked + Bundles)
+
+Phase 4 transport work keeps plain `POST /v1/search` and `POST /v1/lexical-search`
+compatibility and adds two additive endpoints:
+
+- `POST /v1/ranked-search` for flat ranked retrieval
+- `POST /v1/context-bundles` for seed-anchored grouped support context
+
+Ranked response contract fields:
+
+- `backend`
+- `results[].score.{lexical,graph,relation,seed_support,importance,confidence,recency,total}`
+- `results[].matched_terms`
+- `results[].match_sources`
+- `results[].graph_distance`
+- `results[].graph_seed_paths`
+- `results[].graph_relation_kinds`
+- `results[].graph_path`
+
+Context-bundle response contract fields:
+
+- `total_bundles`
+- `consumed_hits`
+- `bundles[].seed.{locator,lexical_score,matched_terms,thought}`
+- `bundles[].support[].{locator,thought,depth,seed_path_count,relation_kinds,path}`
+
+MCP transport mirrors this split with additive tools:
+
+- `mentisdb_ranked_search`
+- `mentisdb_context_bundles`
+
+Acceptance coverage for these transport contracts lives in:
+
+- `tests/search_transport_contract_tests.rs`
 
 Response shape:
 
