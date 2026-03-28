@@ -27,6 +27,8 @@
 //! - `RUST_LOG`
 
 use env_logger::Env;
+use mentisdb::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
+use mentisdb::paths::{HostPlatform, PathEnvironment};
 use mentisdb::server::{
     adopt_legacy_default_mentisdb_dir, start_servers, MentisDbServerConfig, MentisDbServerHandles,
 };
@@ -399,6 +401,101 @@ pub(crate) fn build_update_available_lines(
     ]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FirstRunSetupStatus {
+    pub(crate) interactive_terminal: bool,
+    pub(crate) has_registered_chains: bool,
+    pub(crate) has_configured_integrations: bool,
+}
+
+pub(crate) fn should_show_first_run_setup_notice(status: &FirstRunSetupStatus) -> bool {
+    status.interactive_terminal
+        && !status.has_registered_chains
+        && !status.has_configured_integrations
+}
+
+pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
+    vec![
+        "No configured MentisDB client integrations were detected.".to_string(),
+        "Run mentisdbd wizard to detect installed tools and configure them.".to_string(),
+        "Or preview everything with: mentisdbd setup all --dry-run".to_string(),
+        "Then apply one target with: mentisdbd setup <agent>".to_string(),
+        String::new(),
+        "Supported agents: codex, claude-code, claude-desktop, gemini,".to_string(),
+        "opencode, qwen, copilot, vscode-copilot.".to_string(),
+    ]
+}
+
+fn detect_first_run_setup_status(chain_dir: &Path) -> FirstRunSetupStatus {
+    let has_registered_chains = load_registered_chains(chain_dir)
+        .map(|registry| !registry.chains.is_empty())
+        .unwrap_or(false);
+    let detection =
+        detect_integrations_with_environment(HostPlatform::current(), PathEnvironment::capture());
+    let has_configured_integrations = detection
+        .integrations
+        .iter()
+        .any(|entry| entry.status == DetectionStatus::Configured);
+
+    FirstRunSetupStatus {
+        interactive_terminal: io::stdin().is_terminal() && io::stdout().is_terminal(),
+        has_registered_chains,
+        has_configured_integrations,
+    }
+}
+
+pub(crate) fn maybe_run_first_run_setup_with_io(
+    status: &FirstRunSetupStatus,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    runner: impl FnOnce(&mut dyn BufRead, &mut dyn Write, &mut dyn Write) -> ExitCode,
+) -> io::Result<bool> {
+    if !should_show_first_run_setup_notice(status) {
+        return Ok(false);
+    }
+
+    write!(
+        out,
+        "{}",
+        build_ascii_notice_box("mentisdbd first-run setup", &build_first_run_setup_lines())
+    )?;
+    let response = mentisdb::cli::boxed_yn_prompt(
+        out,
+        "Run the MentisDB setup wizard now while the daemon is already running?",
+        true,
+        input,
+    )?;
+    if response.eq_ignore_ascii_case("n") || response.eq_ignore_ascii_case("no") {
+        return Ok(false);
+    }
+
+    writeln!(out)?;
+    let code = runner(input, out, err);
+    if code != ExitCode::SUCCESS {
+        writeln!(err, "Startup setup wizard exited with status {code:?}.")?;
+    }
+    Ok(true)
+}
+
+fn maybe_run_first_run_setup(status: &FirstRunSetupStatus) -> io::Result<bool> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut input = stdin.lock();
+    let mut out = stdout.lock();
+    let mut err = stderr.lock();
+
+    maybe_run_first_run_setup_with_io(status, &mut input, &mut out, &mut err, |input, out, err| {
+        run_cli_subcommand_with_io(
+            vec![OsString::from("mentisdbd"), OsString::from("wizard")],
+            input,
+            out,
+            err,
+        )
+    })
+}
+
 fn prompt_yes_no(prompt: &str) -> io::Result<bool> {
     let mut input = String::new();
     loop {
@@ -720,6 +817,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Err(e) = refresh_registered_chain_counts(&config.service.chain_dir) {
         log::warn!("Could not refresh chain registry counts: {e}");
     }
+    let first_run_setup_status = detect_first_run_setup_status(&config.service.chain_dir);
 
     // Register per-thought sound callback when MENTISDB_THOUGHT_SOUNDS is enabled.
     #[cfg(feature = "startup-sound")]
@@ -917,6 +1015,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let friendly = format!("https://my.mentisdb.com:{port}/dashboard");
         println!("  Dashboard    {local:<32}  {YELLOW}{friendly}{RESET}");
     }
+
+    if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
+        eprintln!("Startup setup wizard failed: {error}");
+    }
+
     if let Some(tx) = startup_ready_tx.take() {
         let _ = tx.send(());
     }

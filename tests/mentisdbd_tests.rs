@@ -5,6 +5,7 @@ use std::io::Cursor;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::ExitCode;
 use std::sync::{Mutex, OnceLock};
+use tempfile::tempdir;
 
 #[path = "../src/bin/mentisdbd.rs"]
 mod mentisdbd_impl;
@@ -164,6 +165,117 @@ fn parse_daemon_args_rejects_other_unexpected_arguments() {
 }
 
 #[test]
+fn first_run_setup_notice_only_shows_for_interactive_empty_unconfigured_state() {
+    let interactive_first_run = mentisdbd_impl::FirstRunSetupStatus {
+        interactive_terminal: true,
+        has_registered_chains: false,
+        has_configured_integrations: false,
+    };
+    assert!(mentisdbd_impl::should_show_first_run_setup_notice(
+        &interactive_first_run
+    ));
+
+    let has_chain = mentisdbd_impl::FirstRunSetupStatus {
+        has_registered_chains: true,
+        ..interactive_first_run
+    };
+    assert!(!mentisdbd_impl::should_show_first_run_setup_notice(
+        &has_chain
+    ));
+
+    let has_configured_integration = mentisdbd_impl::FirstRunSetupStatus {
+        has_configured_integrations: true,
+        ..interactive_first_run
+    };
+    assert!(!mentisdbd_impl::should_show_first_run_setup_notice(
+        &has_configured_integration
+    ));
+
+    let non_interactive = mentisdbd_impl::FirstRunSetupStatus {
+        interactive_terminal: false,
+        ..interactive_first_run
+    };
+    assert!(!mentisdbd_impl::should_show_first_run_setup_notice(
+        &non_interactive
+    ));
+}
+
+#[test]
+fn first_run_setup_notice_text_points_to_wizard_and_setup_commands() {
+    let lines = mentisdbd_impl::build_first_run_setup_lines();
+    let dialog = mentisdbd_impl::build_ascii_notice_box("mentisdbd first-run setup", &lines);
+
+    assert!(dialog.contains("mentisdbd first-run setup"));
+    assert!(dialog.contains("mentisdbd wizard"));
+    assert!(dialog.contains("mentisdbd setup all --dry-run"));
+    assert!(dialog.contains("mentisdbd setup <agent>"));
+    assert!(dialog.contains("vscode-copilot"));
+}
+
+#[test]
+fn first_run_setup_can_launch_wizard_from_notice() {
+    let status = mentisdbd_impl::FirstRunSetupStatus {
+        interactive_terminal: true,
+        has_registered_chains: false,
+        has_configured_integrations: false,
+    };
+    let mut input = Cursor::new("Y\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let mut launched = false;
+
+    let launched_wizard = mentisdbd_impl::maybe_run_first_run_setup_with_io(
+        &status,
+        &mut input,
+        &mut output,
+        &mut errors,
+        |_input, out, _err| {
+            launched = true;
+            writeln!(out, "MentisDB setup wizard").unwrap();
+            ExitCode::SUCCESS
+        },
+    )
+    .unwrap();
+
+    assert!(launched_wizard);
+    assert!(launched);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("mentisdbd first-run setup"));
+    assert!(stdout.contains("Run the MentisDB setup wizard now"));
+    assert!(stdout.contains("MentisDB setup wizard"));
+}
+
+#[test]
+fn first_run_setup_can_be_skipped_from_notice() {
+    let status = mentisdbd_impl::FirstRunSetupStatus {
+        interactive_terminal: true,
+        has_registered_chains: false,
+        has_configured_integrations: false,
+    };
+    let mut input = Cursor::new("n\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let mut launched = false;
+
+    let launched_wizard = mentisdbd_impl::maybe_run_first_run_setup_with_io(
+        &status,
+        &mut input,
+        &mut output,
+        &mut errors,
+        |_input, _out, _err| {
+            launched = true;
+            ExitCode::SUCCESS
+        },
+    )
+    .unwrap();
+
+    assert!(!launched_wizard);
+    assert!(!launched);
+    assert!(errors.is_empty());
+}
+
+#[test]
 fn setup_help_uses_the_embedded_mentisdbd_cli_surface() {
     let mut input = Cursor::new(Vec::<u8>::new());
     let mut output = Vec::new();
@@ -187,6 +299,80 @@ fn setup_help_uses_the_embedded_mentisdbd_cli_surface() {
     assert!(stdout.contains("mentisdbd setup <agent|all>"));
     assert!(stdout.contains("Supported agents:"));
     assert!(!stdout.contains("mentisdbd daemon"));
+}
+
+#[test]
+fn daemon_setup_subcommand_renders_first_run_plan_instead_of_daemon_surface() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new(Vec::<u8>::new());
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = mentisdbd_impl::run_cli_subcommand_with_io(
+        vec![
+            OsString::from("mentisdbd"),
+            OsString::from("setup"),
+            OsString::from("codex"),
+            OsString::from("--dry-run"),
+        ],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup plan"));
+    assert!(!stdout.contains("mentisdbd daemon"));
+    assert!(!stdout.contains("Endpoints:"));
+}
+
+#[test]
+fn daemon_wizard_subcommand_runs_first_run_wizard_flow() {
+    let _guard = env_lock();
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+
+    let mut input = Cursor::new("\n\nn\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let code = mentisdbd_impl::run_cli_subcommand_with_io(
+        vec![OsString::from("mentisdbd"), OsString::from("wizard")],
+        &mut input,
+        &mut output,
+        &mut errors,
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(errors.is_empty());
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("MentisDB setup wizard"));
+    assert!(stdout.contains("Apply these setup changes?"));
+    assert!(!stdout.contains("mentisdbd daemon"));
+    assert!(!stdout.contains("Endpoints:"));
 }
 
 #[test]
