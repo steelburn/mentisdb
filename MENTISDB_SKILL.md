@@ -978,7 +978,7 @@ Before a large parallel work session, **pre-warm a pool of agents** by loading t
 
 Pre-warm pattern:
 1. Dispatch N agents (e.g. 10 instances of the same specialist role)
-2. Each agent calls `mentisdb_recent_context` and `mentisdb_skill_md` in its first turn
+2. Each agent calls `mentisdb_recent_context`; on MCP clients that support resources, call `resources/read(mentisdb://skill/core)` immediately after `initialize`, otherwise fall back to `mentisdb_skill_md`
 3. Each agent summarizes its loaded state and signals readiness
 4. PM assigns tasks to ready agents as the work queue crystallizes
 
@@ -1032,7 +1032,7 @@ Task(
   description="Implement delta versioning in skills.rs",
   prompt="""
     Working directory: /path/to/mentisdb
-    Step 1: Read mentisdb MCP skill via mentisdb_skill_md tool.
+    Step 1: If the client supports MCP resources, read mentisdb://skill/core via resources/read. Otherwise use mentisdb_skill_md.
     Step 2: Read mentisdb_recent_context(last_n=30).
     Step 3: Implement SkillVersionContent (Full/Delta) in src/skills.rs.
     Step 4: Write a LessonLearned thought to MentisDB before exiting.
@@ -1143,7 +1143,7 @@ You are [role] for [project].
 
 Before starting work:
 1. Call mentisdb_recent_context(last_n=30) to load recent decisions and lessons
-2. Call mentisdb_skill_md to read the MentisDB skill document
+2. If the client supports MCP resources, call resources/read(mentisdb://skill/core); otherwise call mentisdb_skill_md
 
 After completing work:
 1. Write a LessonLearned or Summary thought to MentisDB (agent_id=[your-id])

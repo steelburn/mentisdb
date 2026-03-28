@@ -30,10 +30,28 @@ It stores semantically typed thoughts in an append-only, hash-chained memory log
 
 ## Quick Start
 
-Install and run the daemon:
+Install the daemon:
 
 ```bash
 cargo install mentisdb
+```
+
+Connect your local AI tools the fast way:
+
+```bash
+mentisdbd wizard
+```
+
+Or target one integration explicitly:
+
+```bash
+mentisdbd setup codex
+mentisdbd setup all --dry-run
+```
+
+Then start the daemon:
+
+```bash
 mentisdbd
 ```
 
@@ -43,7 +61,13 @@ Run persistently after closing your SSH session:
 nohup mentisdbd &
 ```
 
-Connect your AI coding tool to the running daemon:
+Modern MCP clients bootstrap themselves from the MCP handshake:
+
+- `initialize.instructions` tells the agent to read `mentisdb://skill/core`
+- `resources/read(mentisdb://skill/core)` delivers the embedded operating skill
+- `GET /mentisdb_skill_md` remains available only as a compatibility fallback
+
+If you need to wire a tool manually, here are the raw MCP commands/configs:
 
 ```bash
 # Claude Code
@@ -350,11 +374,14 @@ REST endpoints:
 - `POST /v1/agents/keys/revoke`
 - `POST /v1/agents/disable`
 - `POST /v1/thought`
-- `POST /v1/thoughts/genesis`
 - `POST /v1/thoughts`
+- `POST /v1/thoughts/genesis`
 - `POST /v1/thoughts/traverse`
 - `POST /v1/retrospectives`
 - `POST /v1/search`
+- `POST /v1/lexical-search`
+- `POST /v1/ranked-search`
+- `POST /v1/context-bundles`
 - `POST /v1/recent-context`
 - `POST /v1/memory-markdown`
 - `POST /v1/skills/upload`
@@ -611,7 +638,16 @@ Response shape:
   "results": [
     {
       "thought": { "index": 42, "agent_id": "planner", "content": "..." },
-      "score": 3.14,
+      "score": {
+        "lexical": 2.91,
+        "graph": 0.18,
+        "relation": 0.05,
+        "seed_support": 0.0,
+        "importance": 0.0,
+        "confidence": 0.0,
+        "recency": 0.0,
+        "total": 3.14
+      },
       "matched_terms": ["latency", "ranking"],
       "match_sources": ["content", "tags", "agent_registry"]
     }
@@ -652,7 +688,7 @@ outside localhost.
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 29 MCP tools:
+The daemon currently exposes 33 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -662,6 +698,12 @@ The daemon currently exposes 29 MCP tools:
   Append a retrospective memory intended to prevent future agents from repeating a hard failure.
 - `mentisdb_search`
   Search thoughts by semantic filters, identity filters, time bounds, and scoring thresholds.
+- `mentisdb_lexical_search`
+  Return flat ranked lexical matches with explainable term and field provenance.
+- `mentisdb_ranked_search`
+  Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns.
+- `mentisdb_context_bundles`
+  Return seed-anchored grouped support context beneath the best lexical seeds.
 - `mentisdb_list_chains`
   List known chains with version, storage adapter, counts, and storage location.
 - `mentisdb_list_agents`
@@ -686,6 +728,8 @@ The daemon currently exposes 29 MCP tools:
   Render recent thoughts into a prompt snippet for session resumption.
 - `mentisdb_memory_markdown`
   Export a `MEMORY.md`-style Markdown view of the full chain or a filtered subset.
+- `mentisdb_import_memory_markdown`
+  Import a `MEMORY.md`-formatted Markdown document into a target chain.
 - `mentisdb_get_thought`
   Return one stored thought by stable id, chain index, or content hash.
 - `mentisdb_get_genesis_thought`

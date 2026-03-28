@@ -1,4 +1,4 @@
-0.7.0.18 MAR/25/2026
+0.7.0 MAR/25/2026
  - feat(dashboard): wire chain explorer search to ranked retrieval and context bundles
    - Dashboard chain search now uses canonical ranked lexical+graph retrieval when search text is present, while preserving chronological filtering for plain agent/type-only browsing
    - Added grouped dashboard context-bundle inspection so operators can see seed-anchored supporting thoughts without flattening the entire graph into one list
@@ -11,14 +11,15 @@
    - Added regression coverage for vector ranking, sidecar corruption detection, model/version separation, stale-after-append behavior, and plain-chain fallback when the sidecar is damaged
  - feat(bootstrap): surface active skills in bootstrap response
    - `BootstrapResponse` now includes an `available_skills: Vec<SkillSummary>` field listing every active skill in the registry at spawn time
-   - Agents must call `mentisdb_read_skill` for each entry immediately after bootstrap to load operating instructions before proceeding with any work
-   - Bootstrap response field carries inline rustdoc guiding agents to verify provenance before loading unknown skills
+   - Uploaded skills are now discoverable at bootstrap time, but agents should only load trusted or relevant skills after verifying provenance
+   - Core operating instructions are delivered through MCP `initialize.instructions` plus `resources/read(mentisdb://skill/core)`; uploaded skills are additive, not the bootstrap source of truth
  - fix(bootstrap): correct lock ordering to eliminate future deadlock risk
    - `bootstrap()` now captures `thought_count` and `head_hash`, drops the chain write-lock, then acquires the skills read-lock
    - Previously both locks could be held simultaneously; the fix ensures only one unrelated lock is held at a time
  - change(mcp): update tool descriptions to enforce eager spawn and checkpoint discipline
-   - `mentisdb_bootstrap`: marked as the first call on every agent spawn; instructs agents to call `mentisdb_skill_md` immediately after and then `mentisdb_read_skill` for each trusted skill in `available_skills`; adds guidance to write a Summary/Checkpoint thought before any compaction, context truncation, or handoff
-   - `mentisdb_skill_md`: marked as mandatory on every agent spawn immediately after bootstrap to load core MentisDB operating instructions
+   - MCP `initialize.instructions` now points agents at `mentisdb://skill/core` so the official operating skill is discoverable without relying on out-of-band REST knowledge
+   - `mentisdb_skill_md` remains as a compatibility fallback for clients that cannot read MCP resources
+   - `mentisdb_bootstrap`: keeps checkpoint discipline guidance and available-skill discovery, but no longer carries the whole bootstrap burden by itself
    - `mentisdb_append`: emphasises saving a Summary/Checkpoint eagerly at every meaningful milestone and always before compaction, truncation, or agent handoff
    - `mentisdb_append_retrospective`: clarifies scope as hard failures, repeated snags, and non-obvious fixes only; adds requirement to call before context compaction or handoff so lessons survive agent clearance
    - `mentisdb_read_skill`: aligned to "trusted or relevant skills" language; references the `available_skills` bootstrap field and adds provenance warning for unknown skills
