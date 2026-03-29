@@ -5,6 +5,7 @@ fn readme_marks_phase3_as_complete_and_optional() {
     assert!(readme.contains("MentisDB now exposes an additive Phase 3 vector sidecar surface"));
     assert!(readme.contains("embeddings remain optional"));
     assert!(readme.contains("vector state lives in a rebuildable sidecar"));
+    assert!(readme.contains("managed vector sidecar"));
     assert!(
         readme.contains("vector hits surface whether they came from a `Fresh` or stale sidecar")
     );

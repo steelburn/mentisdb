@@ -38,7 +38,7 @@ fn macos_catalog_uses_expected_config_targets() {
     );
     assert_eq!(
         spec(&specs, IntegrationKind::ClaudeCode).config_target.path,
-        home.path().join(".claude").join("settings.json")
+        home.path().join(".claude.json")
     );
     assert_eq!(
         spec(&specs, IntegrationKind::VsCodeCopilot)

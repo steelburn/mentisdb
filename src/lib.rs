@@ -2721,6 +2721,36 @@ struct ChainPersistenceMetadata {
     storage_kind: StorageAdapterKind,
 }
 
+trait ManagedEmbeddingProvider: Send + Sync {
+    fn metadata(&self) -> &crate::search::EmbeddingMetadata;
+
+    fn embed_documents(
+        &self,
+        inputs: &[crate::search::EmbeddingInput],
+    ) -> io::Result<Vec<crate::search::VectorDocument>>;
+}
+
+struct RegisteredEmbeddingProvider<P> {
+    provider: P,
+}
+
+impl<P> ManagedEmbeddingProvider for RegisteredEmbeddingProvider<P>
+where
+    P: crate::search::EmbeddingProvider + Send + Sync + 'static,
+{
+    fn metadata(&self) -> &crate::search::EmbeddingMetadata {
+        self.provider.metadata()
+    }
+
+    fn embed_documents(
+        &self,
+        inputs: &[crate::search::EmbeddingInput],
+    ) -> io::Result<Vec<crate::search::VectorDocument>> {
+        crate::search::embed_batch_to_documents(&self.provider, inputs)
+            .map_err(|error| io::Error::other(format!("Failed to build embeddings: {error}")))
+    }
+}
+
 /// Legacy `ThoughtRelation` used when reading schema-v0 binary chains.
 ///
 /// Schema-v0 binary chains serialise relations as two-field records:
@@ -2801,6 +2831,8 @@ pub struct MentisDb {
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
+    managed_vector_sidecars:
+        HashMap<crate::search::EmbeddingMetadata, Box<dyn ManagedEmbeddingProvider>>,
     pending_agent_registry_sync: bool,
     pending_agent_registry_updates: usize,
     pending_chain_registration_sync: bool,
@@ -2896,6 +2928,7 @@ impl MentisDb {
             storage,
             auto_flush: true,
             persistence,
+            managed_vector_sidecars: HashMap::new(),
             pending_agent_registry_sync: false,
             pending_agent_registry_updates: 0,
             pending_chain_registration_sync: false,
@@ -3105,6 +3138,7 @@ impl MentisDb {
             .insert(thought.hash.clone(), self.thoughts.len());
         self.query_indexes.observe(self.thoughts.len(), &thought);
         self.thoughts.push(thought.clone());
+        self.sync_managed_vector_sidecars_for_append(self.thoughts.last().unwrap())?;
         self.mark_agent_registry_dirty();
         self.maybe_flush_agent_registry(
             self.auto_flush || self.thoughts.len() == 1 || agent_count_changed,
@@ -3976,6 +4010,41 @@ impl MentisDb {
         Ok(sidecar)
     }
 
+    /// Rebuild one vector sidecar and keep it synchronized on future appends
+    /// for this handle.
+    ///
+    /// This remains opt-in and handle-local: embeddings are still optional, and
+    /// callers must re-register providers after reopening a chain.
+    pub fn manage_vector_sidecar<P: crate::search::EmbeddingProvider + Send + Sync + 'static>(
+        &mut self,
+        provider: P,
+    ) -> Result<crate::search::VectorSidecar, VectorSearchError<P::Error>> {
+        let sidecar = self.rebuild_vector_sidecar(&provider)?;
+        self.managed_vector_sidecars.insert(
+            provider.metadata().clone(),
+            Box::new(RegisteredEmbeddingProvider { provider }),
+        );
+        Ok(sidecar)
+    }
+
+    /// Stop append-time synchronization for one managed vector sidecar.
+    pub fn unmanage_vector_sidecar(&mut self, metadata: &crate::search::EmbeddingMetadata) -> bool {
+        self.managed_vector_sidecars.remove(metadata).is_some()
+    }
+
+    /// Return the embedding spaces currently managed for append-time vector
+    /// sidecar synchronization on this handle.
+    pub fn managed_vector_sidecars(&self) -> Vec<crate::search::EmbeddingMetadata> {
+        let mut managed: Vec<_> = self.managed_vector_sidecars.keys().cloned().collect();
+        managed.sort_by(|left, right| {
+            left.model_id
+                .cmp(&right.model_id)
+                .then_with(|| left.embedding_version.cmp(&right.embedding_version))
+                .then_with(|| left.dimension.cmp(&right.dimension))
+        });
+        managed
+    }
+
     /// Query a persisted vector sidecar with provider-generated query embeddings.
     ///
     /// This does not change default retrieval behavior. Callers must rebuild the
@@ -4074,6 +4143,126 @@ impl MentisDb {
             total_candidates,
             hits,
         })
+    }
+
+    fn sync_managed_vector_sidecars_for_append(&self, thought: &Thought) -> io::Result<()> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(());
+        };
+        if self.managed_vector_sidecars.is_empty() {
+            return Ok(());
+        }
+
+        let previous_thought_count = self.thoughts.len().saturating_sub(1);
+        let previous_head_hash = if thought.prev_hash.is_empty() {
+            None
+        } else {
+            Some(thought.prev_hash.as_str())
+        };
+
+        for provider in self.managed_vector_sidecars.values() {
+            let metadata = provider.metadata().clone();
+            let path = chain_vector_sidecar_path(
+                &persistence.chain_dir,
+                &persistence.chain_key,
+                persistence.storage_kind,
+                &metadata,
+            );
+            let sidecar = match crate::search::VectorSidecar::load_from_path(&path) {
+                Ok(sidecar)
+                    if matches!(
+                        sidecar.freshness(
+                            &persistence.chain_key,
+                            previous_thought_count,
+                            previous_head_hash,
+                            &metadata,
+                        ),
+                        crate::search::VectorSidecarFreshness::Fresh
+                    ) =>
+                {
+                    self.extend_fresh_vector_sidecar(provider.as_ref(), sidecar, thought)?
+                }
+                Ok(_) | Err(_) => self.rebuild_managed_vector_sidecar(provider.as_ref())?,
+            };
+            sidecar.save_to_path(&path)?;
+        }
+        Ok(())
+    }
+
+    fn extend_fresh_vector_sidecar(
+        &self,
+        provider: &dyn ManagedEmbeddingProvider,
+        sidecar: crate::search::VectorSidecar,
+        thought: &Thought,
+    ) -> io::Result<crate::search::VectorSidecar> {
+        let mut documents = provider.embed_documents(&[crate::search::EmbeddingInput::new(
+            thought.id.to_string(),
+            self.thought_embedding_text(thought),
+        )])?;
+        let vector = documents
+            .pop()
+            .map(|document| document.vector)
+            .ok_or_else(|| io::Error::other("managed embedding provider returned no vectors"))?;
+        let mut entries = sidecar.entries;
+        entries.push(crate::search::VectorSidecarEntry::new(
+            thought.id,
+            thought.index,
+            thought.hash.clone(),
+            vector,
+        ));
+        crate::search::VectorSidecar::build(
+            sidecar.chain_key,
+            sidecar.metadata,
+            self.thoughts.len(),
+            self.head_hash().map(ToOwned::to_owned),
+            Utc::now(),
+            entries,
+        )
+    }
+
+    fn rebuild_managed_vector_sidecar(
+        &self,
+        provider: &dyn ManagedEmbeddingProvider,
+    ) -> io::Result<crate::search::VectorSidecar> {
+        let Some(persistence) = &self.persistence else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this MentisDb handle does not expose stable persistence metadata",
+            ));
+        };
+
+        let inputs: Vec<crate::search::EmbeddingInput> = self
+            .thoughts
+            .iter()
+            .map(|thought| {
+                crate::search::EmbeddingInput::new(
+                    thought.id.to_string(),
+                    self.thought_embedding_text(thought),
+                )
+            })
+            .collect();
+        let documents = provider.embed_documents(&inputs)?;
+        let entries: Vec<crate::search::VectorSidecarEntry> = self
+            .thoughts
+            .iter()
+            .zip(documents)
+            .map(|(thought, document)| {
+                crate::search::VectorSidecarEntry::new(
+                    thought.id,
+                    thought.index,
+                    thought.hash.clone(),
+                    document.vector,
+                )
+            })
+            .collect();
+        crate::search::VectorSidecar::build(
+            persistence.chain_key.clone(),
+            provider.metadata().clone(),
+            self.thoughts.len(),
+            self.head_hash().map(ToOwned::to_owned),
+            Utc::now(),
+            entries,
+        )
     }
 
     fn rank_search_hit<'a>(

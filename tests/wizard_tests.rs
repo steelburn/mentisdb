@@ -97,9 +97,10 @@ fn wizard_can_configure_claude_code_from_existing_settings_fixture() {
     let _guard = env_lock();
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
+    // ~/.claude directory is the detection probe; ~/.claude.json is the config target
     let claude_dir = home.join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
-    let settings_path = claude_dir.join("settings.json");
+    let claude_json_path = home.join(".claude.json");
     let settings_before = r#"{
   "theme": "dark",
   "projects": {
@@ -108,7 +109,7 @@ fn wizard_can_configure_claude_code_from_existing_settings_fixture() {
     }
   }
 }"#;
-    std::fs::write(&settings_path, settings_before).unwrap();
+    std::fs::write(&claude_json_path, settings_before).unwrap();
 
     let previous_home = std::env::var("HOME").ok();
     std::env::set_var("HOME", &home);
@@ -135,7 +136,7 @@ fn wizard_can_configure_claude_code_from_existing_settings_fixture() {
     assert!(stdout.contains("MentisDB setup wizard"));
     assert!(stdout.contains("Claude Code"));
     let parsed: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&claude_json_path).unwrap()).unwrap();
     assert_eq!(parsed["theme"], "dark");
     assert_eq!(
         parsed["projects"]["/Users/tester/workspace/mentisdb"]["trust"],

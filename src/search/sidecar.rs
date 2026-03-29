@@ -183,11 +183,13 @@ impl VectorSidecar {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = File::create(path)?;
+        let temp_path = sidecar_temp_path(path);
+        let file = File::create(&temp_path)?;
         let writer = BufWriter::new(file);
         serde_json::to_writer(writer, self).map_err(|error| {
             io::Error::other(format!("Failed to serialize vector sidecar: {error}"))
-        })
+        })?;
+        replace_sidecar_file(&temp_path, path)
     }
 
     /// Recompute and verify the sidecar's integrity metadata.
@@ -367,4 +369,21 @@ impl VectorSidecar {
             format!("{:x}", hasher.finalize()),
         ))
     }
+}
+
+fn sidecar_temp_path(path: &Path) -> std::path::PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!("{value}.tmp"))
+        .unwrap_or_else(|| "tmp".to_string());
+    path.with_extension(extension)
+}
+
+fn replace_sidecar_file(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    if target.exists() {
+        fs::remove_file(target)?;
+    }
+    fs::rename(source, target)
 }

@@ -139,6 +139,56 @@ fn vector_sidecar_status_turns_stale_after_append() {
 }
 
 #[test]
+fn managed_vector_sidecar_stays_fresh_after_append() {
+    let (_tempdir, mut chain) = build_chain();
+    let provider = TestSemanticProvider::new("local-test", "v1");
+
+    let sidecar = chain.manage_vector_sidecar(provider.clone()).unwrap();
+    assert_eq!(sidecar.entries.len(), 2);
+    assert_eq!(
+        chain.managed_vector_sidecars(),
+        vec![provider.metadata().clone()]
+    );
+
+    chain
+        .append(
+            "planner",
+            ThoughtType::Idea,
+            "Tail-latency mitigation for the next release.",
+        )
+        .unwrap();
+
+    let result = chain
+        .query_vector(
+            &provider,
+            &VectorSearchQuery::new("performance budget").with_limit(3),
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.freshness,
+        mentisdb::search::VectorSidecarFreshness::Fresh
+    );
+    assert_eq!(result.total_candidates, 3);
+    assert_eq!(result.hits.len(), 3);
+    let hit_contents: Vec<_> = result
+        .hits
+        .iter()
+        .map(|hit| hit.thought.content.as_str())
+        .collect();
+    assert!(hit_contents.contains(&"Latency budget for the Europe rollout."));
+    assert!(hit_contents.contains(&"Tail-latency mitigation for the next release."));
+
+    let sidecar = chain
+        .load_vector_sidecar(provider.metadata())
+        .unwrap()
+        .unwrap();
+    assert_eq!(sidecar.entries.len(), 3);
+    assert!(chain.unmanage_vector_sidecar(provider.metadata()));
+    assert!(chain.managed_vector_sidecars().is_empty());
+}
+
+#[test]
 fn vector_sidecar_paths_separate_model_versions() {
     let (_tempdir, chain) = build_chain();
     let provider_v1 = TestSemanticProvider::new("local-test", "v1");

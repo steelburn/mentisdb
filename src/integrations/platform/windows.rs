@@ -31,8 +31,8 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::ClaudeCode,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".claude").join("settings.json"),
-                "Primary Claude Code settings",
+                home.join(".claude.json"),
+                "Claude Code global config and MCP servers",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
@@ -45,7 +45,7 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
                 IntegrationFileFormat::Json,
             )],
             notes: vec![
-                "Windows Claude Code MCP servers are configured under %USERPROFILE%\\.claude\\settings.json (mcpServers.mentisdb); %USERPROFILE%\\.claude\\mcp\\mentisdb.json is treated as legacy.".into(),
+                "Windows Claude Code MCP servers are configured under %USERPROFILE%\\.claude.json (mcpServers.mentisdb); %USERPROFILE%\\.claude\\mcp\\mentisdb.json is treated as legacy.".into(),
             ],
         },
         IntegrationSpec {

@@ -565,6 +565,9 @@ MentisDB now exposes an additive Phase 3 vector sidecar surface for direct crate
 - `MentisDb::load_vector_sidecar(&EmbeddingMetadata)`
 - `MentisDb::vector_sidecar_freshness(&VectorSidecar, &EmbeddingMetadata)`
 - `MentisDb::rebuild_vector_sidecar(&provider)`
+- `MentisDb::manage_vector_sidecar(provider)`
+- `MentisDb::unmanage_vector_sidecar(&EmbeddingMetadata)`
+- `MentisDb::managed_vector_sidecars()`
 - `MentisDb::query_vector(&provider, &VectorSearchQuery)`
 
 Contract:
@@ -573,12 +576,14 @@ Contract:
 - vector state lives in a rebuildable sidecar, never in the canonical append-only chain
 - vector sidecars are separated by `chain_key`, `thought_id`, `thought_hash`, `model_id`, embedding dimension, and embedding version
 - changing the embedding model or version invalidates old vector state instead of silently mixing incompatible embeddings
+- callers can opt one embedding space into append-time synchronization on a live handle by registering a managed vector sidecar provider
 - vector hits surface whether they came from a `Fresh` or stale sidecar
 - deleting or corrupting the sidecar degrades only vector retrieval; plain chain reads, appends, and lexical/graph search still work
 
 Operational flow:
 
 - rebuild a sidecar explicitly for one provider and chain
+- or register that provider as a managed vector sidecar and keep it fresh on future appends for that open handle
 - load or query that sidecar later with the same embedding metadata
 - if the chain head changes, the sidecar becomes stale and results report that freshness state until the sidecar is rebuilt
 
