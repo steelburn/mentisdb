@@ -10,6 +10,8 @@
      (CI pipelines, piped input, --yes flag) so non-interactive use is
      unaffected
    - Added crossterm dependency for raw terminal key-event handling
+ - fix(wizard): clippy implicit_saturating_sub lint in cursor navigation
+   - Replaced guarded `cursor_idx -= 1` with `cursor_idx.saturating_sub(1)`
 
 0.7.2.20 MAR/29/2026
  - feat(search): managed vector sidecars and seamless hybrid ranked retrieval
