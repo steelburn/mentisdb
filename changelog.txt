@@ -1,3 +1,20 @@
+0.7.4.22 MAR/30/2026
+ - fix(daemon): conditional agent primer with HTTPS + friendly address
+   - Primer box is now context-aware: no chains → full bootstrap primer
+     (bootstrap chain, load mentisdb://skill/core, write Summary); chains
+     exist → short resume notice directing the agent to
+     mentisdb_recent_context since MCP initialize auto-delivers setup
+     instructions on connect
+   - Primer always shows the HTTPS MCP address when TLS is running, falls
+     back to plain HTTP otherwise
+   - my.mentisdb.com:<port> friendly alias now shown as an alternative
+     address alongside the 127.0.0.1 local address
+ - refactor(tests): move inline mentisdbd tests to tests/mentisdbd_tests.rs
+   - Removed the #[cfg(test)] mod tests block from src/bin/mentisdbd.rs;
+     all three agent-primer tests now live in the external test suite so
+     the public API surface is exercised the same way third parties would
+     use it and test parallelism is easier to manage
+
 0.7.3.21 MAR/30/2026
  - fix(skills): dashboard and service now refresh the skill registry without restart
    - The shared in-process `SkillRegistry` now reloads itself when `mentisdb-skills.bin` changes on disk, so newly uploaded or updated skills appear immediately
