@@ -435,8 +435,8 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
 /// * `dashboard_url` - Optional dashboard HTTPS URL.
 /// * `has_chains` - Whether any chains already exist on disk.
 ///   * `false` → full bootstrap primer (agent has never connected).
-///   * `true`  → short "ready to resume" notice (MCP initialize already
-///               delivers setup instructions automatically on connect).
+///   * `true` → short "ready to resume" notice (MCP initialize already
+///     delivers setup instructions automatically on connect).
 pub(crate) fn build_agent_primer_lines(
     mcp_addr: &str,
     mcp_friendly: Option<&str>,
@@ -2220,8 +2220,7 @@ mod tests {
     /// No dashboard URL → no "dashboard" text in either mode.
     #[test]
     fn agent_primer_no_dashboard() {
-        let lines =
-            build_agent_primer_lines("https://127.0.0.1:9473", None, None, false);
+        let lines = build_agent_primer_lines("https://127.0.0.1:9473", None, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("mentisdb://skill/core"));
         assert!(!joined.contains("dashboard"));
