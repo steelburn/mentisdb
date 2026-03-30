@@ -101,6 +101,28 @@ pub fn boxed_apply_summary(
     read_line(input)
 }
 
+/// Render the integration-selection prompt box.
+///
+/// Explains that pressing Enter accepts the `[x]` defaults shown above and
+/// lists the alternative keywords the user can type instead.
+pub fn boxed_selection_prompt(out: &mut dyn Write, input: &mut dyn BufRead) -> io::Result<String> {
+    let line1 = " Press Enter to configure the [x] integrations above";
+    let line2 = " or type:  all  ·  none  ·  <integration name(s) separated by commas>";
+    let width = line1.len().max(line2.len()).max(50);
+    let border = format!("+{}+", "-".repeat(width + 2));
+
+    writeln!(out)?;
+    writeln!(out, "{}{}{}", DIM, border, RESET)?;
+    let pad1 = " ".repeat(width.saturating_sub(line1.len()));
+    writeln!(out, "| {}{}{}{} |", BOLD, line1, RESET, pad1)?;
+    let pad2 = " ".repeat(width.saturating_sub(line2.len()));
+    writeln!(out, "| {}{}{}{} |", DIM, line2, RESET, pad2)?;
+    writeln!(out, "{}{}{}", DIM, border, RESET)?;
+    write!(out, "  > ")?;
+    out.flush()?;
+    read_line(input)
+}
+
 /// Render a compact single-question box and read the user's freeform answer.
 /// Used for integration selection and URL-override prompts.
 pub fn boxed_text_prompt(

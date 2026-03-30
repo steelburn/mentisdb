@@ -1,3 +1,16 @@
+0.7.3.21 MAR/30/2026
+ - feat(wizard): interactive checkbox TUI for integration selection
+   - Replaced the confusing text prompt ("default", "all", "none") with a
+     live checkbox list rendered in raw terminal mode
+   - Detected integrations show as [x] (will be configured) or [ ] (skipped)
+     with a navigable > cursor; arrow keys or j/k move the cursor, Space
+     toggles an item, 'a' selects all, 'n' deselects all, Enter confirms,
+     Esc restores the auto-detected defaults
+   - Falls back to the text-based boxed prompt when stdin is not a terminal
+     (CI pipelines, piped input, --yes flag) so non-interactive use is
+     unaffected
+   - Added crossterm dependency for raw terminal key-event handling
+
 0.7.2.20 MAR/29/2026
  - feat(search): managed vector sidecars and seamless hybrid ranked retrieval
    - Added a built-in local text embedding provider plus persisted per-chain managed vector-sidecar settings for `mentisdbd`

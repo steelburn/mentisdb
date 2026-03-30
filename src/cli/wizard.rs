@@ -1,13 +1,16 @@
 use crate::integrations::detect::{detect_integrations_with_environment, DetectionStatus};
 use crate::integrations::plan::{
-    build_detected_setup_catalog, build_setup_plan_for_integration, SetupCatalogPlan,
+    build_detected_setup_catalog, build_setup_plan_for_integration, SetupCatalogPlan, SetupPlan,
 };
 use crate::integrations::IntegrationKind;
 use crate::paths::{HostPlatform, PathEnvironment};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 
 use super::args::{default_url, parse_integration};
-use super::prompt::{boxed_apply_summary, boxed_skip_notice, boxed_text_prompt, boxed_yn_prompt};
+use super::prompt::{
+    boxed_apply_summary, boxed_selection_prompt, boxed_skip_notice, boxed_text_prompt,
+    boxed_yn_prompt,
+};
 use super::setup::ensure_prerequisites;
 use super::{render_setup_plan, WizardCommand};
 
@@ -23,17 +26,17 @@ pub(super) fn run_wizard(
 
     writeln!(out, "MentisDB setup wizard")?;
     writeln!(out)?;
-    render_catalog_summary(&catalog, out)?;
-    writeln!(out)?;
 
     let selected = if command.assume_yes {
+        render_catalog_summary(&catalog, out)?;
+        writeln!(out)?;
         default_selections(&catalog)
+    } else if std::io::stdin().is_terminal() {
+        interactive_checkbox_select(&catalog, out)?
     } else {
-        let prompt = format!(
-            "Select integrations [default: {}], 'all', or 'none'",
-            default_selection_label(&catalog)
-        );
-        let entered = boxed_text_prompt(out, &prompt, input)?;
+        render_catalog_summary(&catalog, out)?;
+        writeln!(out)?;
+        let entered = boxed_selection_prompt(out, input)?;
         resolve_selections(&catalog, &entered)?
     };
 
@@ -136,13 +139,147 @@ pub(super) fn run_wizard(
     Ok(())
 }
 
+/// Interactive checkbox selector using raw terminal mode.
+///
+/// Displays each integration with a `[x]`/`[ ]` checkbox and a `>` cursor.
+/// The user navigates with ↑/↓ (or k/j), toggles with Space, selects all
+/// with `a`, deselects all with `n`, and confirms with Enter.
+fn interactive_checkbox_select(
+    catalog: &SetupCatalogPlan,
+    out: &mut dyn Write,
+) -> io::Result<Vec<IntegrationKind>> {
+    use crossterm::{
+        event::{self, Event, KeyCode, KeyModifiers},
+        terminal,
+    };
+
+    let integrations: Vec<&SetupPlan> = catalog.integrations.iter().collect();
+    if integrations.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut checked: Vec<bool> = integrations
+        .iter()
+        .map(|p| p.detection_status == DetectionStatus::InstalledOrUsed)
+        .collect();
+    let mut cursor_idx: usize = 0;
+    let n = integrations.len();
+
+    writeln!(out, "Select integrations to configure:")?;
+    writeln!(out)?;
+    out.flush()?;
+
+    terminal::enable_raw_mode()?;
+    let _ = write!(out, "\x1b[?25l"); // hide cursor
+
+    let result: io::Result<Vec<IntegrationKind>> = (|| {
+        draw_checkbox_list(out, &integrations, &checked, cursor_idx)?;
+
+        loop {
+            if let Event::Key(key) = event::read()? {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                    }
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                        cursor_idx = cursor_idx.saturating_sub(1);
+                    }
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                        if cursor_idx + 1 < n {
+                            cursor_idx += 1;
+                        }
+                    }
+                    (KeyCode::Char(' '), _) => {
+                        checked[cursor_idx] = !checked[cursor_idx];
+                    }
+                    (KeyCode::Char('a' | 'A'), _) => {
+                        checked.iter_mut().for_each(|c| *c = true);
+                    }
+                    (KeyCode::Char('n' | 'N'), _) => {
+                        checked.iter_mut().for_each(|c| *c = false);
+                    }
+                    (KeyCode::Enter, _) => break,
+                    (KeyCode::Esc, _) => {
+                        // Restore defaults on Escape
+                        for (i, p) in integrations.iter().enumerate() {
+                            checked[i] = p.detection_status == DetectionStatus::InstalledOrUsed;
+                        }
+                        break;
+                    }
+                    _ => continue,
+                }
+                // Redraw: n integration rows + 1 hint row
+                write!(out, "\x1b[{}A", n + 1)?; // move cursor up
+                draw_checkbox_list(out, &integrations, &checked, cursor_idx)?;
+            }
+        }
+
+        Ok(integrations
+            .iter()
+            .zip(checked.iter())
+            .filter(|(_, &c)| c)
+            .map(|(p, _)| p.integration)
+            .collect())
+    })();
+
+    let _ = write!(out, "\x1b[?25h"); // show cursor
+    let _ = terminal::disable_raw_mode();
+    writeln!(out)?;
+
+    result
+}
+
+/// Render the checkbox list in raw-mode style (`\r\n` line endings).
+fn draw_checkbox_list(
+    out: &mut dyn Write,
+    integrations: &[&SetupPlan],
+    checked: &[bool],
+    cursor_idx: usize,
+) -> io::Result<()> {
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    for (i, (plan, &is_checked)) in integrations.iter().zip(checked.iter()).enumerate() {
+        let arrow = if i == cursor_idx { ">" } else { " " };
+        let checkbox = if is_checked { "[x]" } else { "[ ]" };
+        let (pre, post) = if i == cursor_idx {
+            (BOLD, RESET)
+        } else {
+            ("", "")
+        };
+        write!(
+            out,
+            "  {}{} {}  {:<20} {:<18} {}{}\r\n",
+            pre,
+            arrow,
+            checkbox,
+            plan.integration.display_name(),
+            plan.detection_status.as_str(),
+            plan.spec.config_target.path.display(),
+            post,
+        )?;
+    }
+    write!(
+        out,
+        "{}  ↑/↓: move   Space: toggle   a: all   n: none   Enter: confirm{}\r\n",
+        DIM, RESET
+    )?;
+    out.flush()
+}
+
 fn render_catalog_summary(catalog: &SetupCatalogPlan, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Detected integrations:")?;
-    for (index, plan) in catalog.integrations.iter().enumerate() {
+    for plan in &catalog.integrations {
+        let checkbox = if plan.detection_status == DetectionStatus::InstalledOrUsed {
+            "[x]"
+        } else {
+            "[ ]"
+        };
         writeln!(
             out,
-            "  {}. {:<20} {:<18} {}",
-            index + 1,
+            "  {}  {:<20} {:<18} {}",
+            checkbox,
             plan.integration.display_name(),
             plan.detection_status.as_str(),
             plan.spec.config_target.path.display()
@@ -158,19 +295,6 @@ fn default_selections(catalog: &SetupCatalogPlan) -> Vec<IntegrationKind> {
         .filter(|plan| plan.detection_status == DetectionStatus::InstalledOrUsed)
         .map(|plan| plan.integration)
         .collect()
-}
-
-fn default_selection_label(catalog: &SetupCatalogPlan) -> String {
-    let defaults = default_selections(catalog);
-    if defaults.is_empty() {
-        "none".to_string()
-    } else {
-        defaults
-            .iter()
-            .map(|integration| integration.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
 }
 
 fn resolve_selections(catalog: &SetupCatalogPlan, raw: &str) -> io::Result<Vec<IntegrationKind>> {
