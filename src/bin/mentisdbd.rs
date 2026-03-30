@@ -428,29 +428,66 @@ pub(crate) fn build_first_run_setup_lines() -> Vec<String> {
 
 /// Builds the lines for the "Agent primer" notice box shown at daemon startup.
 ///
-/// The returned lines contain the shortest copy-paste prompt a user can give
-/// their AI agent to self-initialize MentisDB memory: bootstrap, read the
-/// core skill, then write a Summary checkpoint so future sessions recover it
-/// automatically.
-///
 /// # Arguments
 ///
-/// * `mcp_addr` - The local MCP base URL, e.g. `"http://127.0.0.1:9471"`.
-/// * `dashboard_url` - Optional dashboard URL; appended as an import hint when present.
-pub(crate) fn build_agent_primer_lines(mcp_addr: &str, dashboard_url: Option<&str>) -> Vec<String> {
-    let mut lines = vec![
-        "Paste into your AI chat to activate memory:".to_string(),
-        String::new(),
-        format!("  \"MentisDB is running at {mcp_addr}."),
-        "   Call mentisdb_bootstrap('<your-project>'), then".to_string(),
-        "   resources/read mentisdb://skill/core to load rules,".to_string(),
-        "   then write a Summary of what you just learned.\"".to_string(),
-        String::new(),
-        "Memory persists across resets and harnesses.".to_string(),
-    ];
+/// * `mcp_addr` - Preferred MCP base URL (HTTPS when TLS is up, HTTP otherwise).
+/// * `mcp_friendly` - Optional `my.mentisdb.com` alias shown as an alternative.
+/// * `dashboard_url` - Optional dashboard HTTPS URL.
+/// * `has_chains` - Whether any chains already exist on disk.
+///   * `false` → full bootstrap primer (agent has never connected).
+///   * `true`  → short "ready to resume" notice (MCP initialize already
+///               delivers setup instructions automatically on connect).
+pub(crate) fn build_agent_primer_lines(
+    mcp_addr: &str,
+    mcp_friendly: Option<&str>,
+    dashboard_url: Option<&str>,
+    has_chains: bool,
+) -> Vec<String> {
+    let addr_line = match mcp_friendly {
+        Some(f) => format!("  MCP: {mcp_addr}  (or {f})"),
+        None => format!("  MCP: {mcp_addr}"),
+    };
+
+    let mut lines: Vec<String> = if !has_chains {
+        // First-ever run: agent needs to bootstrap a chain from scratch.
+        let mut v = vec![
+            "Paste into your AI chat to activate memory:".to_string(),
+            String::new(),
+            format!("  \"MentisDB is running at {mcp_addr}."),
+        ];
+        if let Some(f) = mcp_friendly {
+            v.push(format!("   (or at {f})"));
+        }
+        v.extend([
+            "   Call mentisdb_bootstrap('<your-project>'), then".to_string(),
+            "   resources/read mentisdb://skill/core to load rules,".to_string(),
+            "   then write a Summary of what you just learned.\"".to_string(),
+            String::new(),
+            "Memory persists across resets and harnesses.".to_string(),
+        ]);
+        v
+    } else {
+        // Chains exist: agent connects and receives init instructions via MCP
+        // initialize automatically; it only needs to resume its chain.
+        vec![
+            "Chains detected. Connect your agent — it will receive".to_string(),
+            "setup instructions automatically on MCP connect.".to_string(),
+            String::new(),
+            addr_line,
+            String::new(),
+            "To resume a project, paste into your AI chat:".to_string(),
+            String::new(),
+            "  \"Connect to MentisDB, then call".to_string(),
+            "   mentisdb_recent_context('<chain-key>') to reload".to_string(),
+            "   prior context and continue your work.\"".to_string(),
+        ]
+    };
+
     if let Some(url) = dashboard_url {
+        lines.push(String::new());
         lines.push(format!("Import/manage skills → {url}"));
     }
+
     lines
 }
 
@@ -1048,9 +1085,28 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .dashboard
         .as_ref()
         .map(|h| format!("https://{}/dashboard", h.local_addr()));
+
+    // Prefer the HTTPS MCP address for the primer; fall back to plain HTTP.
+    let primer_mcp_addr = handles
+        .https_mcp
+        .as_ref()
+        .map(|h| format!("https://{}", h.local_addr()))
+        .unwrap_or_else(|| mcp_local.clone());
+    let primer_mcp_port = handles
+        .https_mcp
+        .as_ref()
+        .map(|h| h.local_addr().port())
+        .unwrap_or(mcp_port);
+    let primer_mcp_friendly = format!("https://my.mentisdb.com:{primer_mcp_port}");
+
     ascii_notice_box(
         "Agent primer",
-        &build_agent_primer_lines(&mcp_local, dashboard_url.as_deref()),
+        &build_agent_primer_lines(
+            &primer_mcp_addr,
+            Some(&primer_mcp_friendly),
+            dashboard_url.as_deref(),
+            first_run_setup_status.has_registered_chains,
+        ),
     );
 
     if let Err(error) = maybe_run_first_run_setup(&first_run_setup_status) {
@@ -2126,26 +2182,46 @@ fn print_tls_tip(config: &MentisDbServerConfig, handles: &MentisDbServerHandles)
 mod tests {
     use super::*;
 
-    /// Verifies that the primer lines include the MCP address, the bootstrap
-    /// call, the skill URI, and the dashboard URL when one is provided.
+    /// No chains: full bootstrap primer with address, skill URI, and dashboard.
     #[test]
-    fn agent_primer_lines_include_mcp_addr_and_dashboard_url() {
+    fn agent_primer_no_chains_shows_bootstrap() {
         let lines = build_agent_primer_lines(
-            "http://127.0.0.1:9471",
+            "https://127.0.0.1:9473",
+            Some("https://my.mentisdb.com:9473"),
             Some("https://127.0.0.1:9475/dashboard"),
+            false,
         );
         let joined = lines.join("\n");
-        assert!(joined.contains("127.0.0.1:9471"));
+        assert!(joined.contains("127.0.0.1:9473"));
+        assert!(joined.contains("my.mentisdb.com:9473"));
         assert!(joined.contains("mentisdb://skill/core"));
         assert!(joined.contains("mentisdb_bootstrap"));
         assert!(joined.contains("9475/dashboard"));
     }
 
-    /// Verifies that omitting the dashboard URL produces output that does not
-    /// mention "dashboard" at all.
+    /// Chains exist: resume primer — no bootstrap call, no skill/core URI.
     #[test]
-    fn agent_primer_lines_no_dashboard() {
-        let lines = build_agent_primer_lines("http://127.0.0.1:9471", None);
+    fn agent_primer_with_chains_shows_resume() {
+        let lines = build_agent_primer_lines(
+            "https://127.0.0.1:9473",
+            Some("https://my.mentisdb.com:9473"),
+            Some("https://127.0.0.1:9475/dashboard"),
+            true,
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("127.0.0.1:9473"));
+        assert!(joined.contains("my.mentisdb.com:9473"));
+        assert!(joined.contains("mentisdb_recent_context"));
+        assert!(!joined.contains("mentisdb_bootstrap"));
+        assert!(!joined.contains("mentisdb://skill/core"));
+        assert!(joined.contains("9475/dashboard"));
+    }
+
+    /// No dashboard URL → no "dashboard" text in either mode.
+    #[test]
+    fn agent_primer_no_dashboard() {
+        let lines =
+            build_agent_primer_lines("https://127.0.0.1:9473", None, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("mentisdb://skill/core"));
         assert!(!joined.contains("dashboard"));
