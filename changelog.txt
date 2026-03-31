@@ -1,3 +1,22 @@
+0.7.5.23 MAR/31/2026
+ - fix(auto-update): robust restart after cargo install
+   - Removed the silent current_exe() fallback in install_latest_release():
+     if installed_binary_path() is not found, PATH is now searched before
+     giving up with a clear error — prevents exec() silently re-running the
+     old binary when CARGO_INSTALL_ROOT or CARGO_HOME differ from defaults
+   - shutdown_all_servers() errors during restart are now treated as warnings
+     instead of aborting the entire restart flow; the exec/spawn proceeds
+     regardless so a partially-shut-down server no longer leaves the user
+     with no running daemon
+   - exec() failure on Unix is now logged explicitly and falls back to
+     spawn() + process::exit(0), ensuring the old process always terminates
+     and the new one always starts even if exec() cannot replace the process
+     image (e.g. due to Tokio FD state on macOS multi-threaded runtimes)
+   - Update prompt now defaults to N on empty input [y/N]; prompt_yes_no
+     extracted to prompt_yes_no_with_io for testability
+   - Added four tests covering prompt defaults, y/n responses, and invalid
+     input handling
+
 0.7.4.22 MAR/30/2026
  - fix(daemon): conditional agent primer with HTTPS + friendly address
    - Primer box is now context-aware: no chains → full bootstrap primer
