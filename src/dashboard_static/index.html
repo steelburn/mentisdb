@@ -2662,54 +2662,178 @@
     return html;
   }
   // =====================================================================
+  // MODAL HELPER — shared close / backdrop / Escape / go-button wiring
+  // =====================================================================
+  function bindModal(overlayId, closeBtnId, goBtnId, fbId, { onOpen, onGo }) {
+    const overlay  = document.getElementById(overlayId);
+    const closeBtn = document.getElementById(closeBtnId);
+    const goBtn    = document.getElementById(goBtnId);
+    const fb       = document.getElementById(fbId);
+
+    const close = () => { overlay.style.display = 'none'; };
+    const open  = arg => {
+      fb.textContent = '';
+      goBtn.disabled = false;
+      if (onOpen) onOpen(arg);
+      overlay.style.display = '';
+    };
+
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && overlay.style.display !== 'none') close();
+    });
+
+    goBtn.addEventListener('click', () => {
+      fb.textContent = '';
+      goBtn.disabled = true;
+      Promise.resolve()
+        .then(() => onGo({ fb, close }))
+        .catch(err => showFeedback(fb, false, err.message))
+        .finally(() => { goBtn.disabled = false; });
+    });
+
+    return { open, close };
+  }
+
+  // =====================================================================
   // IMPORT MEMORY.MD
   // =====================================================================
-  (function() {
-    const overlay  = document.getElementById('import-md-overlay');
-    const closeBtn = document.getElementById('import-md-close');
+  {
+    let _chainKey = null;
     const desc     = document.getElementById('import-md-desc');
     const agentIn  = document.getElementById('import-md-agent');
     const textarea = document.getElementById('import-md-text');
-    const goBtn    = document.getElementById('import-md-go');
-    const fb       = document.getElementById('import-md-fb');
 
-    let _chainKey = null;
-
-    closeBtn.addEventListener('click', () => { overlay.style.display = 'none'; });
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.style.display = 'none'; });
-
-    goBtn.addEventListener('click', () => {
-      const markdown = textarea.value.trim();
-      const defaultAgentId = agentIn.value.trim();
-      if (!markdown) { showFeedback(fb, false, 'Please paste MEMORY.md content.'); return; }
-      goBtn.disabled = true;
-      fb.textContent = '';
-      api(`/dashboard/api/chains/${encodeURIComponent(_chainKey)}/import-markdown`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markdown, default_agent_id: defaultAgentId || undefined }),
-      })
-      .then(d => {
-        const n = d.imported != null ? d.imported : (d.count != null ? d.count : '?');
-        showFeedback(fb, true, `✓ Imported ${n} thought${n === 1 ? '' : 's'}`);
+    const { open } = bindModal('import-md-overlay', 'import-md-close', 'import-md-go', 'import-md-fb', {
+      onOpen(chainKey) {
+        _chainKey = chainKey;
+        desc.textContent = `Import MEMORY.md into chain "${chainKey}".`;
         textarea.value = '';
         agentIn.value  = '';
-        setTimeout(() => { overlay.style.display = 'none'; }, 1800);
-      })
-      .catch(err => { showFeedback(fb, false, err.message); })
-      .finally(() => { goBtn.disabled = false; });
+      },
+      onGo({ fb, close }) {
+        const markdown = textarea.value.trim();
+        const defaultAgentId = agentIn.value.trim();
+        if (!markdown) { showFeedback(fb, false, 'Please paste MEMORY.md content.'); return; }
+        return api(`/dashboard/api/chains/${encodeURIComponent(_chainKey)}/import-markdown`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ markdown, default_agent_id: defaultAgentId || undefined }),
+        })
+        .then(d => {
+          const n = d.imported != null ? d.imported : (d.count != null ? d.count : '?');
+          showFeedback(fb, true, `Imported ${n} thought${n === 1 ? '' : 's'}`);
+          textarea.value = '';
+          agentIn.value  = '';
+          setTimeout(close, 1800);
+        });
+      },
     });
 
-    window.openImportMarkdownModal = function(chainKey) {
-      _chainKey = chainKey;
-      desc.textContent = `Import MEMORY.md into chain "${chainKey}".`;
-      textarea.value = '';
-      agentIn.value  = '';
-      fb.textContent = '';
-      goBtn.disabled = false;
-      overlay.style.display = '';
-    };
-  })();
+    window.openImportMarkdownModal = open;
+  }
+
+  // =====================================================================
+  // UPLOAD SKILL MODAL
+  // =====================================================================
+  {
+    const agentIn   = document.getElementById('upload-skill-agent');
+    const skillIdIn = document.getElementById('upload-skill-id');
+    const formatSel = document.getElementById('upload-skill-format');
+    const contentTA = document.getElementById('upload-skill-content');
+
+    const { open } = bindModal('upload-skill-overlay', 'upload-skill-close', 'upload-skill-go', 'upload-skill-fb', {
+      onOpen() {
+        agentIn.value   = '';
+        skillIdIn.value = '';
+        formatSel.value = 'markdown';
+        contentTA.value = '';
+        agentIn.focus();
+      },
+      onGo({ fb, close }) {
+        const agent_id = agentIn.value.trim();
+        const content  = contentTA.value.trim();
+        if (!agent_id) { showFeedback(fb, false, 'Agent ID is required.'); agentIn.focus(); return; }
+        if (!content)  { showFeedback(fb, false, 'Content is required.');  contentTA.focus(); return; }
+        const payload = { agent_id, content, format: formatSel.value };
+        const sid = skillIdIn.value.trim();
+        if (sid) payload.skill_id = sid;
+        return api('/dashboard/api/skills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        .then(d => {
+          const name = (d && (d.name || d.skill_id)) || 'skill';
+          showFeedback(fb, true, `Uploaded "${esc(name)}" successfully.`);
+          setTimeout(() => {
+            close();
+            if (location.hash === '#skills' || location.hash === '') renderSkillList();
+          }, 1800);
+        });
+      },
+    });
+
+    window.openUploadSkillModal = open;
+  }
+
+  // =====================================================================
+  // ADD AGENT MODAL
+  // =====================================================================
+  {
+    const chainSel = document.getElementById('add-agent-chain');
+    const agentIn  = document.getElementById('add-agent-id');
+    const nameIn   = document.getElementById('add-agent-name');
+    const ownerIn  = document.getElementById('add-agent-owner');
+    const descIn   = document.getElementById('add-agent-desc');
+
+    const { open } = bindModal('add-agent-overlay', 'add-agent-close', 'add-agent-go', 'add-agent-fb', {
+      onOpen(preselectedChain) {
+        chainSel.innerHTML = '<option value="">Loading…</option>';
+        api('/dashboard/api/chains')
+          .then(chains => {
+            const keys = Object.keys(chains || {}).sort();
+            chainSel.innerHTML = keys.length
+              ? keys.map(k => `<option value="${esc(k)}" ${k === preselectedChain ? 'selected' : ''}>${esc(k)}</option>`).join('')
+              : '<option value="">No chains found</option>';
+          })
+          .catch(() => { chainSel.innerHTML = '<option value="">Error loading chains</option>'; });
+        agentIn.value = '';
+        nameIn.value  = '';
+        ownerIn.value = '';
+        descIn.value  = '';
+        setTimeout(() => { (preselectedChain ? agentIn : chainSel).focus(); }, 50);
+      },
+      onGo({ fb, close }) {
+        const chain_key    = chainSel.value.trim();
+        const agent_id     = agentIn.value.trim();
+        const display_name = nameIn.value.trim()  || undefined;
+        const agent_owner  = ownerIn.value.trim() || undefined;
+        const description  = descIn.value.trim()  || undefined;
+        if (!chain_key) { showFeedback(fb, false, 'Please select a memory chain.'); return; }
+        if (!agent_id)  { showFeedback(fb, false, 'Agent ID is required.'); return; }
+        return api('/dashboard/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chain_key, agent_id, display_name, agent_owner, description }),
+        })
+        .then(agent => {
+          showFeedback(fb, true, `Agent "${agent.agent_id || agent_id}" registered on ${chain_key}`);
+          agentIn.value = '';
+          nameIn.value  = '';
+          ownerIn.value = '';
+          descIn.value  = '';
+          setTimeout(() => {
+            close();
+            if (location.hash === '#agents' || location.hash === '') renderAgentList(chain_key);
+          }, 1800);
+        });
+      },
+    });
+
+    window.openAddAgentModal = open;
+  }
 
   </script>
 </body>

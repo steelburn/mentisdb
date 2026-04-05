@@ -10,7 +10,7 @@ pub use mentisdb::search;
 pub use mentisdb::{
     chain_storage_filename, deregister_chain, load_registered_chains, AgentStatus,
     BinaryStorageAdapter, ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm,
-    RankedSearchGraph, RankedSearchHit, RankedSearchQuery, SkillFormat, SkillRegistry,
+    RankedSearchGraph, RankedSearchHit, RankedSearchQuery, SkillFormat, SkillRegistry, SkillUpload,
     StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation, ThoughtRelationKind,
     ThoughtRole, ThoughtType,
 };
