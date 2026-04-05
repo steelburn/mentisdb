@@ -322,6 +322,8 @@ This is not redundant journaling — it is the durable record that another agent
 
 If the reload summary continues from a known earlier checkpoint, decision, or plan, include that prior thought in `refs`. Session-restart summaries should usually form a chain, not a set of disconnected islands.
 
+**On chains with more than ~100 thoughts**, use the Checkpoint-First Bootstrap pattern from the **Large Chain Context Budget** section rather than a raw `recent_context` dump. Load the latest Checkpoint first, then request only the targeted slices you actually need before calling `recent_context(last_n=10)` for the tail.
+
 
 
 ## Retrieval Patterns
@@ -452,6 +454,132 @@ For multi-agent chains:
 - scan one agent first when you want a specialist's operating guidance
 - scan across agents when you want decisions, conflicts, or shared constraints
 - combine `agent_ids` with `thought_types` and `roles` to avoid drowning in generic history
+
+---
+
+## Large Chain Context Budget
+
+When a chain grows beyond a few dozen thoughts, **unguided retrieval becomes the primary cause of context window waste**. Every raw thought you load verbatim consumes tokens. The indexes exist specifically to let you fetch precision slices instead of broad swaths.
+
+### The Index Hierarchy
+
+MentisDB provides three levels of indexed acceleration. Always use the highest level that answers your question:
+
+| Level | Tool | What it uses | Best for |
+|---|---|---|---|
+| 1 — Hybrid ranked | `ranked_search` | lexical + vector sidecar + graph expansion | "What is most relevant to this topic?" |
+| 2 — Metadata filter | `search` | inverted index on types, roles, tags, concepts, agents, timestamps | "Give me all Decisions tagged `auth`" |
+| 3 — Bundle context | `context_bundles` | same seeds as ranked_search + graph support grouping | "Give me seeds + their supporting context" |
+| 4 — Direct lookup | `get_thought`, `head`, `get_genesis_thought` | O(1) hash/index lookup | "Give me this exact thought" |
+| 5 — Filtered traversal | `traverse_thoughts` with filters | sequential scan with early-exit filters | "Walk N–M in order, but only Corrections" |
+| 6 — Full traversal | `traverse_thoughts` unfiltered | full sequential scan | Historical audit, provenance, migration only |
+
+**Rule: prefer level 1–4 for day-to-day retrieval. Level 5 only when order matters. Level 6 only for audits.**
+
+### Know the Chain Size First
+
+Before loading anything on a large chain, call `mentisdb_head` to get the current chain length:
+
+```json
+{ "tool": "mentisdb_head" }
+```
+
+Use the returned `thought_count` to pick your strategy:
+
+| Chain size | Default strategy |
+|---|---|
+| < 50 thoughts | `recent_context(last_n=30)` is fine; unfiltered traversal is acceptable |
+| 50–200 thoughts | Use `ranked_search` or filtered `search`; cap `recent_context` at `last_n=20` |
+| 200–500 thoughts | Always filter by type/role/tags before loading; cap `recent_context` at `last_n=15`; prefer `ranked_search` with tight text queries |
+| > 500 thoughts | **Checkpoint-first bootstrap** (see below); cap `recent_context` at `last_n=10`; never unfiltered traverse |
+
+### Checkpoint-First Bootstrap
+
+On any chain with more than ~100 thoughts, start every session like this instead of a broad `recent_context` dump:
+
+1. Call `mentisdb_head` — note the `thought_count` and `head_hash`.
+2. Search for the latest Checkpoint: `search(thought_types=["Summary"], roles=["Checkpoint"], limit=3)` — read the most recent one.
+3. From the checkpoint content, determine what additional targeted slices you actually need.
+4. Load only those slices: e.g. `search(thought_types=["Constraint","Decision"], tags_any=["your-project"])`.
+5. Call `recent_context(last_n=10)` for the newest unread activity.
+
+This gives you orientation in 4–5 tool calls instead of loading 50–100 raw thoughts.
+
+### Context Token Budget Rules
+
+Apply these caps when constructing your retrieval plan:
+
+- **Session bootstrap target**: load ≤ 25 thoughts into active context to start. You can always fetch more if a question requires it.
+- **Per-query cap**: a single `search` or `ranked_search` result set should rarely exceed 15–20 thoughts in one call. Use pagination (`limit`, `offset`) if you need more.
+- **Traversal chunk size**: use `chunk_size ≤ 25` for interactive review; `chunk_size ≤ 50` for batch summarization. Summarize each page before pulling the next.
+- **`recent_context` cap**: `last_n=30` is the default. Use `last_n=10–15` on chains > 200 thoughts unless you know you need breadth.
+- **Never load the full chain into context at once.** If you find yourself doing `chunk_size=500` or similar, you need a different strategy (summarize in waves, or use a background agent).
+
+### Filter-Before-Load Discipline
+
+Every retrieval call should carry at least one filter that narrows the result set. Unfiltered calls on large chains are expensive:
+
+- **Bad**: `traverse_thoughts(anchor_boundary="genesis", direction="forward", chunk_size=100)` on a 400-thought chain.
+- **Good**: `traverse_thoughts(anchor_boundary="genesis", direction="forward", chunk_size=50, thought_types=["Decision","LessonLearned"], tags_any=["your-project"])`.
+
+When using `search`, always supply at least one of: `thought_types`, `roles`, `tags_any`, `concepts_any`, `agent_ids`, `since`/`until`. A bare `text`-only search is acceptable because it filters by relevance; an empty-body search is not.
+
+### Ranked Search as the Default for Topical Queries
+
+When a chain has a managed vector sidecar, `ranked_search` automatically blends lexical exact-match, vector semantic similarity, and graph support scores. This is the single best tool for "what does the chain know about X?" questions on large chains. It replaces manual multi-step traversal for most topical lookups:
+
+```json
+{
+  "tool": "mentisdb_ranked_search",
+  "parameters": {
+    "chain_key": "borganism-brain",
+    "text": "sqlx transaction borrowing pattern",
+    "limit": 8
+  }
+}
+```
+
+Use `limit=5–10` for targeted lookups; `limit=15–20` when you want broader coverage. Going above 20 in one call is rarely justified — if you do, scan the top results first and decide whether you need more before consuming the rest.
+
+When the vector sidecar is absent or stale, `ranked_search` degrades gracefully to lexical + graph scoring. This degradation is silent and clean — no errors, just reduced semantic precision.
+
+### Avoiding Redundant Context Loads
+
+After finding relevant thoughts via `ranked_search` or `context_bundles`, do **not** also traverse the same region. The search results already contain the thought content — re-loading them via traversal doubles the token cost without adding information.
+
+Pattern to avoid:
+```
+1. ranked_search → finds thoughts at indices 42, 67, 91  ← already loaded content
+2. traverse_thoughts(anchor_index=42) → re-reads the same thoughts  ← wasted tokens
+```
+
+Use traversal to recover *adjacent ordered context* around a search result anchor, not to re-read what you already have.
+
+### Summarize-in-Waves for Long Historical Review
+
+When you genuinely need broad historical coverage (audit, migration, provenance), process the chain in waves rather than loading everything at once:
+
+```
+Wave 1: traverse forward chunk_size=50 → produce a 3-sentence summary of thoughts 0–49
+Wave 2: traverse forward from anchor 50, chunk_size=50 → produce another 3-sentence summary
+...
+Final: combine wave summaries into one compressed overview
+```
+
+Each wave summary replaces the raw thought content in your working context. You end with a dense, actionable overview at a fraction of the token cost of holding all raw thoughts simultaneously.
+
+### Chain Size Signals at a Glance
+
+```
+mentisdb_head()  →  { thought_count: N, ... }
+
+N < 50:    load freely, recent_context(30) is fine
+N 50-200:  use ranked_search or filtered search; cap recent_context at 20
+N 200-500: checkpoint-first, cap recent_context at 15, filter aggressively  
+N > 500:   checkpoint-first, cap recent_context at 10, wave-summarize if auditing
+```
+
+The indexes are always warm. The context window is always finite. Use the indexes.
 
 ## Skill Registry
 
@@ -1368,7 +1496,9 @@ The REST port defaults to `9472` (`MENTISDB_REST_PORT`). The request and respons
 
 Before work:
 
-- read recent checkpoints
+- call `mentisdb_head` to get chain size; use the **Large Chain Context Budget** table to pick your retrieval strategy
+- on chains > 100 thoughts, use **Checkpoint-First Bootstrap** instead of a raw `recent_context` dump
+- read recent checkpoints (cap `last_n` to the size-appropriate budget)
 - read relevant retrospectives
 - read active constraints and decisions
 
