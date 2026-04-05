@@ -19,8 +19,8 @@
 use crate::{
     deregister_chain, load_registered_chains, AgentStatus, ManagedVectorProviderKind, MentisDb,
     PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillRegistry,
-    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole,
-    ThoughtType,
+    SkillUpload, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind,
+    ThoughtRole, ThoughtType,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -166,8 +166,8 @@ pub(crate) fn dashboard_router(state: DashboardState) -> Router {
             "/agents/{chain_key}/{agent_id}/copy-to/{target_chain_key}",
             post(api_copy_agent_to_chain),
         )
-        // Skill listing and reading
-        .route("/skills", get(api_skills))
+        // Skill listing, reading, and uploading
+        .route("/skills", get(api_skills).post(api_upload_skill))
         .route("/skills/{skill_id}", get(api_get_skill))
         .route("/skills/{skill_id}/versions", get(api_skill_versions))
         .route("/skills/{skill_id}/diff", get(api_skill_diff))
@@ -1708,6 +1708,60 @@ async fn api_deprecate_skill(
     let summary = skills
         .deprecate_skill(&skill_id, body.reason.as_deref())
         .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(summary).map_err(internal_error)?))
+}
+
+/// Request body for `POST /dashboard/api/skills`.
+///
+/// All fields map directly to the [`SkillUpload`] builder.  `skill_id` is
+/// optional; when omitted MentisDB derives a stable id from the skill name
+/// found in the content.  `format` defaults to `"markdown"` when absent.
+#[derive(Debug, Deserialize)]
+struct DashboardUploadSkillBody {
+    /// The agent that is uploading the skill.  Must already be registered.
+    agent_id: String,
+    /// Raw skill content — Markdown or JSON depending on `format`.
+    content: String,
+    /// Optional stable skill id.  Auto-derived from name when omitted.
+    skill_id: Option<String>,
+    /// Content format: `"markdown"` (default) or `"json"`.
+    format: Option<String>,
+}
+
+/// `POST /dashboard/api/skills`
+///
+/// Uploads a new skill version from the dashboard form.
+/// The uploading agent must already be registered in the agent registry.
+///
+/// # Errors
+///
+/// Returns `500 Internal Server Error` if the upload fails (e.g. the agent
+/// is not registered, the content is malformed, or a storage error occurs).
+async fn api_upload_skill(
+    State(state): State<DashboardState>,
+    Json(body): Json<DashboardUploadSkillBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    refresh_skill_registry(&state).await?;
+    let fmt = match body
+        .format
+        .as_deref()
+        .unwrap_or("markdown")
+        .to_lowercase()
+        .as_str()
+    {
+        "json" => SkillFormat::Json,
+        _ => SkillFormat::Markdown,
+    };
+
+    let mut upload = SkillUpload::new(&body.agent_id, fmt, &body.content);
+    if let Some(ref id) = body.skill_id {
+        if !id.is_empty() {
+            upload = upload.with_skill_id(id);
+        }
+    }
+
+    let mut skills = state.skills.write().await;
+    let summary = skills.upload_skill(upload).map_err(internal_error)?;
     Ok(Json(serde_json::to_value(summary).map_err(internal_error)?))
 }
 
