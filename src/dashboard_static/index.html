@@ -681,10 +681,12 @@
   // =====================================================================
   // MODAL
   // =====================================================================
-  let _prevFocus = null;
-  let _modalKH   = null;
+  let _prevFocus      = null;
+  let _modalKH        = null;
+  let _modalChainKey  = null;
 
-  function openModal(thought) {
+  function openModal(thought, chainKey) {
+    _modalChainKey = chainKey || EX.chainKey || null;
     _prevFocus = document.activeElement;
     const tags     = (thought.tags     || []).map(t => `<span class="badge badge-blue">${esc(t)}</span>`).join(' ');
     const concepts = (thought.concepts || []).map(c => `<span class="badge badge-purple">${esc(c)}</span>`).join(' ');
@@ -696,8 +698,9 @@
     const relHtml  = relArr
       ? `<ul style="margin:4px 0 0 0;padding-left:18px">${
           relArr.map(rel => {
+            const relChainKey = rel.chain_key || _modalChainKey || '';
             const chain = rel.chain_key ? ` <span style="color:#8b949e">(chain: ${esc(rel.chain_key)})</span>` : '';
-            return `<li style="margin-bottom:2px">${esc(rel.kind)} → <code class="mono" style="font-size:0.78rem">${esc(rel.target_id)}</code>${chain}</li>`;
+            return `<li style="margin-bottom:2px">${esc(rel.kind)} → <button class="rel-thought-link mono" style="font-size:0.78rem;background:none;border:none;color:#58a6ff;cursor:pointer;padding:0;text-decoration:underline" data-rel-thought-id="${esc(rel.target_id)}" data-rel-chain-key="${esc(relChainKey)}">${esc(rel.target_id)}</button>${chain}</li>`;
           }).join('')
         }</ul>`
       : null;
@@ -765,6 +768,20 @@
     overlay.classList.remove('hidden');
     const closeBtn = document.getElementById('modal-close-btn');
     closeBtn.focus();
+
+    // Wire relation thought-id links
+    document.querySelectorAll('#modal-box .rel-thought-link').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const tid = btn.getAttribute('data-rel-thought-id');
+        const ck  = btn.getAttribute('data-rel-chain-key');
+        if (!tid || !ck) return;
+        try {
+          const related = await api(`/dashboard/api/thoughts/${encodeURIComponent(ck)}/${encodeURIComponent(tid)}`);
+          openModal(related, ck);
+        } catch (_) {}
+      });
+    });
 
     if (_modalKH) document.removeEventListener('keydown', _modalKH);
     _modalKH = e => {
@@ -1462,7 +1479,7 @@
         const bundleIndex = Number(el.getAttribute('data-bundle-index'));
         const supportIndex = Number(el.getAttribute('data-support-index'));
         const thought = rows?.[bundleIndex]?.support?.[supportIndex]?.thought;
-        if (thought) openModal(thought);
+        if (thought) openModal(thought, EX.chainKey);
       });
     });
   }
@@ -1553,7 +1570,7 @@
           </table></div>
         `;
         body.querySelectorAll('tbody tr').forEach((row, i) => {
-          row.addEventListener('click', () => openModal(thoughts[i]));
+          row.addEventListener('click', () => openModal(thoughts[i], EX.chainKey));
         });
         renderExplorerBundles(isRanked ? bundles : [], bundlesEl);
         if (pgEl) {
@@ -1872,7 +1889,7 @@
           </table></div>
         `;
         tEl.querySelectorAll('tbody tr').forEach((row, i) => {
-          row.addEventListener('click', () => openModal(thoughts[i]));
+          row.addEventListener('click', () => openModal(thoughts[i], chainKey));
         });
       })
       .catch(err => {
@@ -2171,7 +2188,7 @@
 
       // row click → modal
       main.querySelectorAll('tbody tr').forEach((row, i) => {
-        row.addEventListener('click', () => openModal(thoughts[i]));
+        row.addEventListener('click', () => openModal(thoughts[i], chainKey));
       });
     }
 
