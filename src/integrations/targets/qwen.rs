@@ -7,12 +7,10 @@ pub(super) fn build(
     plan: &SetupPlan,
     settings: &IntegrationWriterSettings,
 ) -> IntegrationApplyPlan {
-    let patch = JsonPatch::new()
-        .ensure_path(["$version"], json!(3))
-        .set_path(
-            ["mcpServers", settings.server_name(), "httpUrl"],
-            json!(settings.url_for(plan.integration)),
-        );
+    let patch = JsonPatch::new().set_path(["$version"], json!(3)).set_path(
+        ["mcpServers", settings.server_name(), "httpUrl"],
+        json!(settings.url_for(plan.integration)),
+    );
 
     IntegrationApplyPlan::new(plan.integration, plan.platform).with_file(ManagedFile::json(
         plan.spec.config_target.path.clone(),

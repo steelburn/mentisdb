@@ -97,6 +97,7 @@ impl JsonPatch {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn ensure_path<I, S>(mut self, path: I, value: Value) -> Self
     where
         I: IntoIterator<Item = S>,
