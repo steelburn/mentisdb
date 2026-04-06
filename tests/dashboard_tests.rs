@@ -137,6 +137,14 @@ async fn agent_detail_form_hydrates_values_after_dom_insertion() {
     assert!(html.contains("document.getElementById('ad-name').value = agent.display_name || '';"));
     assert!(html.contains("document.getElementById('ad-desc').value = agent.description || '';"));
     assert!(html.contains("document.getElementById('ad-owner').value = agent.owner || '';"));
+    assert!(
+        html.contains("agent.display_name") && html.contains("agent.description") && html.contains("agent.owner"),
+        "JavaScript should reference agent object properties (display_name, description, owner)"
+    );
+    assert!(
+        html.contains("getElementById('ad-") && html.contains("').value = agent."),
+        "JavaScript should use getElementById pattern to set form values from agent properties"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -170,6 +178,18 @@ async fn dashboard_chain_agent_counts_link_to_agent_sections() {
         r#"<div class="section-label" id="${agentListAnchorId(ck)}"><a href="${agentListHash(ck)}""#
     ));
     assert!(html.contains("target.scrollIntoView({ behavior: 'auto', block: 'start' });"));
+    assert!(
+        html.contains("agent-chain-${encodeURIComponent(chainKey)}"),
+        "agentListAnchorId should generate anchor IDs with agent-chain- prefix"
+    );
+    assert!(
+        html.contains("#agents/${encodeURIComponent(chainKey)}"),
+        "agentListHash should generate hrefs with #agents/ prefix"
+    );
+    assert!(
+        html.contains("href=\"${agentListHash(") || html.contains("href=${agentListHash("),
+        "anchor href should use agentListHash function"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
