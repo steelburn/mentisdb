@@ -1,3 +1,31 @@
+0.7.8.26 APR/06/2026
+ - security(skills): SkillReadOutput wrapper — SkillRegistry::read_skill() now returns
+   SkillReadOutput { content, warnings, status } instead of a plain String, so callers
+   can no longer silently ignore skill warnings or revocation status
+ - security(skills): add MAX_SKILL_SIZE_BYTES=1MB limit to import_skill() to prevent
+   unbounded skill uploads from exhausting server memory
+ - security(skills): add XSS warning to render_markdown_skill() doc comment — output is
+   raw Markdown, callers MUST sanitize before rendering in HTML contexts
+ - security(skills): lower per-thought MAX_THOUGHT_PAYLOAD_BYTES from 64 MB to 10 MB
+   as DoS protection against large blob uploads on shared chains
+ - security(dashboard): add rate limiting to /dashboard/login — 5 failed attempts per IP
+   within 5 minutes returns 429 Too Many Requests; counter resets on successful login
+ - security(dashboard): use subtle::ConstantTimeEq for PIN comparison to prevent timing
+   attacks; add subtle=2.6 dependency
+ - docs(MENTISDB_SKILL.md): fix all wrong REST API examples — /v1/memories/append
+   → POST /v1/thoughts, /v1/memories/search (GET) → POST /v1/search, and
+   /v1/memories/recent (GET) → POST /v1/recent-context with JSON body
+ - docs(README): add MENTISDB_TLS_CERT, MENTISDB_TLS_KEY, MENTISDB_HTTPS_MCP_PORT,
+   MENTISDB_HTTPS_REST_PORT environment variable documentation
+ - docs(WHITEPAPER): remove 'DRAFT:' prefix from title
+ - code(lib): fix unresolved doc links — to_memory_markdown → MentisDb::to_memory_markdown,
+   append_thought → MentisDb::append_thought, Corrects/Invalidates →
+   ThoughtRelationKind::Corrects/Invalidates; remove broken link to private WriterState
+ - code(integrations): fix qwen.rs to use set_path() instead of ensure_path(IfMissing)
+   so $version=3 is always written (not silently skipped when present)
+ - tests: add test_read_skill_nonexistent_version() asserting NotFound error for invalid
+   version_id; update all read_skill() call sites to use .content for string operations
+
 0.7.7.25 APR/05/2026
  - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
    - GET /dashboard/api/chains returns an array of objects; JS was calling Object.keys() on the array
