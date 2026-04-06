@@ -1,27 +1,27 @@
+use super::PlatformPaths;
 use crate::integrations::{
     IntegrationFileFormat, IntegrationKind, IntegrationPathTarget, IntegrationSpec,
 };
 use crate::paths::{HostPlatform, PathEnvironment};
-use std::path::PathBuf;
 
 pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
     let platform = HostPlatform::Windows;
-    let home = user_root(env, platform);
+    let paths = PlatformPaths::new(env, platform);
     let app_data = env
         .config_root_for(platform)
-        .unwrap_or_else(|| home.join("AppData").join("Roaming"));
+        .unwrap_or_else(|| paths.home.join("AppData").join("Roaming"));
 
     vec![
         IntegrationSpec {
             integration: IntegrationKind::Codex,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".codex").join("config.toml"),
+                paths.home.join(".codex").join("config.toml"),
                 "Primary Codex MCP and CLI config",
                 IntegrationFileFormat::Toml,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".codex"),
+                paths.home.join(".codex"),
                 "Codex home directory",
             )],
             companion_targets: vec![],
@@ -31,16 +31,16 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::ClaudeCode,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".claude.json"),
+                paths.home.join(".claude.json"),
                 "Claude Code global config and MCP servers",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".claude"),
+                paths.home.join(".claude"),
                 "Claude Code home directory",
             )],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".claude").join("mcp").join("mentisdb.json"),
+                paths.home.join(".claude").join("mcp").join("mentisdb.json"),
                 "Legacy Claude Code per-server MCP file",
                 IntegrationFileFormat::Json,
             )],
@@ -52,16 +52,16 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::GeminiCli,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".gemini").join("settings.json"),
+                paths.home.join(".gemini").join("settings.json"),
                 "Primary Gemini CLI settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".gemini"),
+                paths.home.join(".gemini"),
                 "Gemini CLI home directory",
             )],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".gemini").join("system.md"),
+                paths.home.join(".gemini").join("system.md"),
                 "Optional Gemini system prompt file",
                 IntegrationFileFormat::Markdown,
             )],
@@ -86,12 +86,12 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::Qwen,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".qwen").join("settings.json"),
+                paths.home.join(".qwen").join("settings.json"),
                 "Primary Qwen settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".qwen"),
+                paths.home.join(".qwen"),
                 "Qwen home directory",
             )],
             companion_targets: vec![],
@@ -101,18 +101,17 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::CopilotCli,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".copilot").join("mcp-config.json"),
+                paths.home.join(".copilot").join("mcp-config.json"),
                 "GitHub Copilot CLI MCP configuration",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".copilot"),
+                paths.home.join(".copilot"),
                 "GitHub Copilot CLI home directory",
             )],
             companion_targets: vec![],
             notes: vec![
-                "Windows GitHub Copilot CLI support maps to %USERPROFILE%\\.copilot\\mcp-config.json."
-                    .into(),
+                "Windows GitHub Copilot CLI support maps to %USERPROFILE%\\.copilot\\mcp-config.json.".into(),
             ],
         },
         IntegrationSpec {
@@ -150,15 +149,8 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             )],
             companion_targets: vec![],
             notes: vec![
-                "Windows Claude Desktop support maps to %APPDATA%\\Claude\\claude_desktop_config.json."
-                    .into(),
+                "Windows Claude Desktop support maps to %APPDATA%\\Claude\\claude_desktop_config.json.".into(),
             ],
         },
     ]
-}
-
-fn user_root(env: &PathEnvironment, platform: HostPlatform) -> PathBuf {
-    env.home_dir_for(platform)
-        .or_else(|| env.current_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("."))
 }

@@ -1,33 +1,28 @@
+use super::PlatformPaths;
 use crate::integrations::{
     IntegrationFileFormat, IntegrationKind, IntegrationPathTarget, IntegrationSpec,
 };
 use crate::paths::{HostPlatform, PathEnvironment};
-use std::path::PathBuf;
 
 pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
     let platform = HostPlatform::Macos;
-    let home = user_root(env, platform);
+    let paths = PlatformPaths::new(env, platform);
     let app_support = env
         .config_root_for(platform)
-        .unwrap_or_else(|| home.join("Library").join("Application Support"));
-    let xdg_config = home.join(".config");
-    let copilot_root = env
-        .xdg_config_home
-        .clone()
-        .map(|root| root.join("copilot"))
-        .unwrap_or_else(|| home.join(".copilot"));
+        .unwrap_or_else(|| paths.home.join("Library").join("Application Support"));
+    let xdg_config = paths.home.join(".config");
 
     vec![
         IntegrationSpec {
             integration: IntegrationKind::Codex,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".codex").join("config.toml"),
+                paths.home.join(".codex").join("config.toml"),
                 "Primary Codex MCP and CLI config",
                 IntegrationFileFormat::Toml,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".codex"),
+                paths.home.join(".codex"),
                 "Codex home directory",
             )],
             companion_targets: vec![],
@@ -37,23 +32,23 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::ClaudeCode,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".claude.json"),
+                paths.home.join(".claude.json"),
                 "Claude Code global config and MCP servers",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![
                 IntegrationPathTarget::directory(
-                    home.join(".claude"),
+                    paths.home.join(".claude"),
                     "Claude Code home directory",
                 ),
                 IntegrationPathTarget::file(
-                    home.join(".claude.json"),
+                    paths.home.join(".claude.json"),
                     "Claude Code global state file",
                     IntegrationFileFormat::Json,
                 ),
             ],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".claude").join("mcp").join("mentisdb.json"),
+                paths.home.join(".claude").join("mcp").join("mentisdb.json"),
                 "Legacy Claude Code per-server MCP file",
                 IntegrationFileFormat::Json,
             )],
@@ -65,22 +60,21 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::GeminiCli,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".gemini").join("settings.json"),
+                paths.home.join(".gemini").join("settings.json"),
                 "Primary Gemini CLI settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".gemini"),
+                paths.home.join(".gemini"),
                 "Gemini CLI home directory",
             )],
             companion_targets: vec![IntegrationPathTarget::file(
-                home.join(".gemini").join("system.md"),
+                paths.home.join(".gemini").join("system.md"),
                 "Optional Gemini system prompt file",
                 IntegrationFileFormat::Markdown,
             )],
             notes: vec![
-                "Gemini commonly stores settings.json in ~/.gemini; system.md is optional and should not be required for detection."
-                    .into(),
+                "Gemini commonly stores settings.json in ~/.gemini; system.md is optional and should not be required for detection.".into(),
             ],
         },
         IntegrationSpec {
@@ -104,12 +98,12 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::Qwen,
             platform,
             config_target: IntegrationPathTarget::file(
-                home.join(".qwen").join("settings.json"),
+                paths.home.join(".qwen").join("settings.json"),
                 "Primary Qwen settings",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                home.join(".qwen"),
+                paths.home.join(".qwen"),
                 "Qwen home directory",
             )],
             companion_targets: vec![],
@@ -119,18 +113,17 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             integration: IntegrationKind::CopilotCli,
             platform,
             config_target: IntegrationPathTarget::file(
-                copilot_root.join("mcp-config.json"),
+                paths.copilot_root.join("mcp-config.json"),
                 "GitHub Copilot CLI MCP configuration",
                 IntegrationFileFormat::Json,
             ),
             detection_probes: vec![IntegrationPathTarget::directory(
-                copilot_root,
+                paths.copilot_root,
                 "GitHub Copilot CLI home directory",
             )],
             companion_targets: vec![],
             notes: vec![
-                "GitHub Copilot CLI uses ~/.copilot/mcp-config.json by default and XDG_CONFIG_HOME/copilot/mcp-config.json when XDG_CONFIG_HOME is set."
-                    .into(),
+                "GitHub Copilot CLI uses ~/.copilot/mcp-config.json by default and XDG_CONFIG_HOME/copilot/mcp-config.json when XDG_CONFIG_HOME is set.".into(),
             ],
         },
         IntegrationSpec {
@@ -174,10 +167,4 @@ pub(super) fn specs(env: &PathEnvironment) -> Vec<IntegrationSpec> {
             ],
         },
     ]
-}
-
-fn user_root(env: &PathEnvironment, platform: HostPlatform) -> PathBuf {
-    env.home_dir_for(platform)
-        .or_else(|| env.current_dir.clone())
-        .unwrap_or_else(|| PathBuf::from("."))
 }
