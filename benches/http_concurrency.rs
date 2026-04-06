@@ -317,14 +317,44 @@ async fn run_write_wave(client: Arc<Client>, base_url: Arc<String>, n: usize) ->
         let url = Arc::clone(&base_url);
         set.spawn(async move {
             let body = build_append_body(i);
+            let expected_content = format!("bench thought {i}");
             let t0 = Instant::now();
-            let ok = c
+            let resp = c
                 .post(format!("{url}/v1/thoughts"))
                 .json(&body)
                 .send()
-                .await
+                .await;
+            let ok = resp
+                .as_ref()
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
+            if ok {
+                if let Ok(resp) = resp.unwrap().json::<serde_json::Value>().await {
+                    if let Some(thought) = resp.get("thought") {
+                        if let Some(thought_id) = thought.get("id").and_then(|v| v.as_str()) {
+                            let get_resp = c
+                                .post(format!("{url}/v1/thought"))
+                                .json(&serde_json::json!({
+                                    "chain_key": CHAIN_KEY,
+                                    "thought_id": thought_id
+                                }))
+                                .send()
+                                .await;
+                            if let Ok(get_resp) = get_resp {
+                                if let Ok(thought_resp) = get_resp.json::<serde_json::Value>().await {
+                                    if let Some(retrieved) = thought_resp.get("thought") {
+                                        if let Some(content) = retrieved.get("content").and_then(|v| v.as_str()) {
+                                            if content != expected_content {
+                                                eprintln!("content mismatch: expected '{expected_content}', got '{content}'");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             (t0.elapsed(), ok)
         });
     }
