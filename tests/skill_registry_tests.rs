@@ -173,14 +173,17 @@ Search by UTC day window first.
     let first_markdown = registry
         .read_skill("mentisdb", Some(first_version_id), SkillFormat::Markdown)
         .unwrap();
-    assert!(first_markdown.contains("# mentisdb") || first_markdown.contains("# MentisDB"));
+    assert!(
+        first_markdown.content.contains("# mentisdb")
+            || first_markdown.content.contains("# MentisDB")
+    );
 
     let latest_json = registry
         .read_skill("mentisdb", None, SkillFormat::Json)
         .unwrap();
     assert!(
-        latest_json.contains("\"name\": \"mentisdb\"")
-            || latest_json.contains("\"name\": \"MentisDB\"")
+        latest_json.content.contains("\"name\": \"mentisdb\"")
+            || latest_json.content.contains("\"name\": \"MentisDB\"")
     );
 
     let deprecated = registry
@@ -549,8 +552,10 @@ fn skill_second_upload_stores_delta() {
         )
         .unwrap();
     assert!(
-        reconstructed_v0.contains("Original paragraph with some detail"),
-        "v0 must reconstruct to original content; got: {reconstructed_v0}"
+        reconstructed_v0
+            .content
+            .contains("Original paragraph with some detail"),
+        "v0 must reconstruct to original content; got: {reconstructed_v0:?}"
     );
 
     let reconstructed_v1 = registry
@@ -561,8 +566,10 @@ fn skill_second_upload_stores_delta() {
         )
         .unwrap();
     assert!(
-        reconstructed_v1.contains("Revised paragraph with updated information"),
-        "v1 must reconstruct to revised content; got: {reconstructed_v1}"
+        reconstructed_v1
+            .content
+            .contains("Revised paragraph with updated information"),
+        "v1 must reconstruct to revised content; got: {reconstructed_v1:?}"
     );
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -623,8 +630,8 @@ fn skill_delta_chain_reconstructs_all_versions() {
             .unwrap();
         let expected_token = format!("REVISION_{i}_TOKEN");
         assert!(
-            reconstructed.contains(&expected_token),
-            "version {i} must reconstruct to its original content; token '{expected_token}' not found in: {reconstructed}"
+            reconstructed.content.contains(&expected_token),
+            "version {i} must reconstruct to its original content; token '{expected_token}' not found in: {reconstructed:?}"
         );
     }
 
@@ -786,8 +793,8 @@ fn skill_migration_v1_to_v2() {
         .read_skill("legacy-skill", None, SkillFormat::Markdown)
         .expect("legacy-skill must be readable after migration");
     assert!(
-        reconstructed.contains("Use the legacy API"),
-        "migrated skill body must survive round-trip; got: {reconstructed}"
+        reconstructed.content.contains("Use the legacy API"),
+        "migrated skill body must survive round-trip; got: {reconstructed:?}"
     );
 
     // Version must have been assigned version_number 0 during migration.

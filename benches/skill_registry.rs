@@ -327,7 +327,7 @@ pub fn reconstruct_latency(c: &mut Criterion) {
                         let text = registry
                             .read_skill(black_box(&skill_id), None, SkillFormat::Markdown)
                             .expect("reconstruct_latency: read_skill failed");
-                        black_box(text.len());
+                        black_box(text.content.len());
                     },
                     BatchSize::SmallInput,
                 );

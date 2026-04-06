@@ -302,7 +302,10 @@ async fn handle_login(
         if let Some(&(count, first_attempt)) = map.get(ip_key) {
             let elapsed = now.duration_since(first_attempt);
             if count >= RATE_LIMIT_MAX_ATTEMPTS && elapsed.as_secs() < RATE_LIMIT_WINDOW_SECS {
-                return (StatusCode::TOO_MANY_REQUESTS, "Too many failed attempts. Try again later.")
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many failed attempts. Try again later.",
+                )
                     .into_response();
             }
         }
@@ -1701,7 +1704,9 @@ async fn api_get_skill(
         .read_skill(&skill_id, None, SkillFormat::Markdown)
         .map_err(internal_error)?;
 
-    Ok(Json(json!({ "summary": summary, "markdown": output.content, "warnings": output.warnings, "status": output.status })))
+    Ok(Json(
+        json!({ "summary": summary, "markdown": output.content, "warnings": output.warnings, "status": output.status }),
+    ))
 }
 
 /// `GET /dashboard/api/skills/:skill_id/versions`

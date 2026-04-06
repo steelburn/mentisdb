@@ -37,9 +37,10 @@ use uuid::Uuid;
 pub use skills::{
     export_skill, import_skill, migrate_skill_registry, SkillDocument, SkillEntry, SkillFormat,
     SkillQuery, SkillReadOutput, SkillRegistry, SkillRegistryManifest,
-    SkillRegistryMigrationReport, SkillSection, SkillStatus, SkillSummary, SkillUpload, SkillVersion,
-    SkillVersionContent, SkillVersionSummary, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
-    MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1, MENTISDB_SKILL_REGISTRY_V2,
+    SkillRegistryMigrationReport, SkillSection, SkillStatus, SkillSummary, SkillUpload,
+    SkillVersion, SkillVersionContent, SkillVersionSummary, MENTISDB_SKILL_CURRENT_SCHEMA_VERSION,
+    MENTISDB_SKILL_REGISTRY_CURRENT_VERSION, MENTISDB_SKILL_REGISTRY_V1,
+    MENTISDB_SKILL_REGISTRY_V2,
 };
 
 /// Persistence interface for MentisDb storage backends.

@@ -138,7 +138,9 @@ async fn agent_detail_form_hydrates_values_after_dom_insertion() {
     assert!(html.contains("document.getElementById('ad-desc').value = agent.description || '';"));
     assert!(html.contains("document.getElementById('ad-owner').value = agent.owner || '';"));
     assert!(
-        html.contains("agent.display_name") && html.contains("agent.description") && html.contains("agent.owner"),
+        html.contains("agent.display_name")
+            && html.contains("agent.description")
+            && html.contains("agent.owner"),
         "JavaScript should reference agent object properties (display_name, description, owner)"
     );
     assert!(
