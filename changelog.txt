@@ -28,9 +28,19 @@
   - refactor(server): extract HasOptionalQueryFields trait — build_query, build_markdown_query,
     and build_traversal_query now share apply_optional_query_fields() helper (~40 lines)
     eliminating ~150 lines of duplicated optional-field application logic
-  - refactor(platform): extract PlatformPaths struct in mod.rs to centralize home directory,
+   - refactor(platform): extract PlatformPaths struct in mod.rs to centralize home directory,
     config_root, and copilot_root computation for linux/macos/windows; reduces boilerplate
     by 8-18 lines per platform file
+ - perf: -13.8% single-append latency (p=0.01) via three hot-path improvements:
+   - Zero-copy record assembly: encode directly into length-prefixed Vec with one allocation
+     using encode_into_std_write() — eliminates intermediate copy in append_thought
+   - Bincode hashing: compute_thought_hash() now uses bincode instead of serde_json,
+     eliminating a full JSON serialization per append (bincode ~3-5x faster for structs)
+   - Configurable group commit window via MENTISDB_GROUP_COMMIT_MS env var (default 2ms);
+     set to 0 for lowest latency, higher for bulk-load throughput
+   - Double background write queue capacity (FLUSH_THRESHOLD*8 = 128 slots) to reduce
+     backpressure stalls under concurrent multi-agent writes
+   - Pre-allocate background writer buffer to FLUSH_THRESHOLD*512 bytes
 
 0.7.7.25 APR/05/2026
  - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
