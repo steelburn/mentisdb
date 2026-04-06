@@ -23,8 +23,14 @@
    ThoughtRelationKind::Corrects/Invalidates; remove broken link to private WriterState
  - code(integrations): fix qwen.rs to use set_path() instead of ensure_path(IfMissing)
    so $version=3 is always written (not silently skipped when present)
- - tests: add test_read_skill_nonexistent_version() asserting NotFound error for invalid
-   version_id; update all read_skill() call sites to use .content for string operations
+  - tests: add test_read_skill_nonexistent_version() asserting NotFound error for invalid
+    version_id; update all read_skill() call sites to use .content for string operations
+  - refactor(server): extract HasOptionalQueryFields trait — build_query, build_markdown_query,
+    and build_traversal_query now share apply_optional_query_fields() helper (~40 lines)
+    eliminating ~150 lines of duplicated optional-field application logic
+  - refactor(platform): extract PlatformPaths struct in mod.rs to centralize home directory,
+    config_root, and copilot_root computation for linux/macos/windows; reduces boilerplate
+    by 8-18 lines per platform file
 
 0.7.7.25 APR/05/2026
  - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
