@@ -897,3 +897,48 @@ fn skill_upload_signing_fields_stored_on_version() {
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[test]
+fn test_read_skill_nonexistent_version() {
+    use uuid::Uuid;
+
+    let path = unique_registry_path();
+    let mut registry = SkillRegistry::open_at_path(&path).unwrap();
+
+    let content = r#"---
+schema_version: 1
+name: test-skill
+description: A test skill
+---
+# Test Skill
+Content here.
+"#;
+    registry
+        .upload_skill(SkillUpload::new(
+            "test-agent",
+            SkillFormat::Markdown,
+            content,
+        ))
+        .unwrap();
+
+    let nonexistent_version_id = Uuid::new_v4();
+    let result = registry.read_skill(
+        "test-skill",
+        Some(nonexistent_version_id),
+        SkillFormat::Markdown,
+    );
+    assert!(
+        result.is_err(),
+        "read_skill with nonexistent version_id should return error"
+    );
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("No version") && err_msg.contains("found for skill"),
+        "error message should indicate version not found, got: {}",
+        err_msg
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
