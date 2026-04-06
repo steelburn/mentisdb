@@ -40,7 +40,20 @@
      set to 0 for lowest latency, higher for bulk-load throughput
    - Double background write queue capacity (FLUSH_THRESHOLD*8 = 128 slots) to reduce
      backpressure stalls under concurrent multi-agent writes
-   - Pre-allocate background writer buffer to FLUSH_THRESHOLD*512 bytes
+    - Pre-allocate background writer buffer to FLUSH_THRESHOLD*512 bytes
+ - remove(JsonlStorageAdapter): binary is the only supported format for new chains
+   - JsonlStorageAdapter re-opened the file on every append (O(n) file handles per chain)
+   - StorageAdapterKind::Jsonl retained for registry backward-compat and migration reads
+   - Legacy .jsonl chains still readable via mentisdbd migrate; write path removed
+   - MentisDb::open_with_key_and_storage_kind returns Err if called with Jsonl
+   - MENTISDB_SKILL.md, server.rs, mentisdbd.rs updated to remove Jsonl references
+ - refactor: extract read_length_prefixed_thoughts<T> helper to DRY the two identical
+   ~40-line bincode length-prefix read loops in load_legacy_v0_binary_thoughts and
+   load_binary_thoughts; net ~70 lines removed; MAX_THOUGHT_PAYLOAD_BYTES hoisted
+   to module-level constant
+ - bench: add append_latency_percentiles group (p50/p95/p99 per-append via iter_custom)
+   and concurrent_append_query group (2/4/8 writer+reader threads on shared Mutex<MentisDb>)
+ - docs(MENTISDB_SKILL.md): add Step 0 chain/agent auto-selection guidance for agents
 
 0.7.7.25 APR/05/2026
  - fix(dashboard): Add Agent modal Memory Chain dropdown showed numeric indices instead of chain names
