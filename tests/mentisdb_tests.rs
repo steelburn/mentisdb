@@ -1127,6 +1127,25 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 }
 
+struct FailingStorageAdapter;
+impl StorageAdapter for FailingStorageAdapter {
+    fn load_thoughts(&self) -> std::io::Result<Vec<Thought>> {
+        Ok(Vec::new())
+    }
+    fn append_thought(&self, _thought: &Thought) -> std::io::Result<()> {
+        Err(std::io::Error::other("disk fell out"))
+    }
+    fn storage_location(&self) -> String {
+        "failing://".to_string()
+    }
+    fn storage_kind(&self) -> StorageAdapterKind {
+        StorageAdapterKind::Binary
+    }
+    fn storage_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+}
+
 #[test]
 fn custom_storage_adapter_can_back_a_chain() {
     let adapter = MemoryStorageAdapter::new("memory://test");
@@ -1145,6 +1164,20 @@ fn custom_storage_adapter_can_back_a_chain() {
     assert_eq!(
         reloaded.thoughts()[0].content,
         "Adapter-backed thought persisted."
+    );
+}
+
+#[test]
+fn test_append_thought_propagates_adapter_error() {
+    let adapter = FailingStorageAdapter;
+    let mut chain = MentisDb::open_with_storage(Box::new(adapter)).unwrap();
+    let result = chain.append("agent1", ThoughtType::Insight, "This should fail");
+    assert!(result.is_err(), "append should propagate adapter error");
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert!(
+        err.to_string().contains("disk fell out"),
+        "expected 'disk fell out' error message"
     );
 }
 
