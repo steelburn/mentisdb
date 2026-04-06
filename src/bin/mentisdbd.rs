@@ -1251,7 +1251,7 @@ Important environment variables:
     Default chain key when requests omit one.
 
   MENTISDB_STORAGE_ADAPTER
-    New-chain storage format: binary or jsonl
+    New-chain storage format: binary
 
   MENTISDB_BIND_HOST
     Bind address host. Default: 127.0.0.1

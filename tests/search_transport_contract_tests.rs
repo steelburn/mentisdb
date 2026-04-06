@@ -62,7 +62,7 @@ async fn phase4_rest_ranked_search_contract_exposes_graph_aware_fields() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(
@@ -155,7 +155,7 @@ async fn phase4_rest_context_bundle_contract_returns_seed_anchored_groups() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(
@@ -265,7 +265,7 @@ async fn phase4_rest_context_bundles_report_full_total_across_pages() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     for (seed_content, support_content) in [
@@ -347,7 +347,7 @@ async fn phase4_rest_ranked_and_bundle_contracts_honor_agent_filters() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let alpha_seed = append_thought_via_rest(
@@ -481,7 +481,7 @@ async fn phase4_mcp_tool_catalog_exposes_ranked_and_bundle_search_tools() {
     let router = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "transport-mcp",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let response = router
@@ -555,12 +555,12 @@ async fn phase4_mcp_execute_honors_agent_filters_for_ranked_and_bundle_search() 
     let rest = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let mcp = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let alpha_seed = append_thought_via_rest(
@@ -707,7 +707,7 @@ async fn phase4_transport_keeps_plain_search_compatibility() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(

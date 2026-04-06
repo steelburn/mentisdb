@@ -220,7 +220,7 @@ async fn mcp_router_lists_mentisdb_tools() {
     let router = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let response = router
@@ -426,7 +426,7 @@ async fn mcp_execute_returns_embedded_skill_markdown() {
     let router = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let response = router
@@ -464,7 +464,7 @@ async fn mcp_router_manages_skill_registry() {
     let router = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "skills-chain",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let markdown = r#"---
 schema_version: 1
@@ -624,7 +624,7 @@ async fn rest_router_bootstraps_and_reports_head() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let health = router
@@ -723,7 +723,7 @@ async fn rest_router_writes_interaction_logs_to_file_when_console_logging_is_dis
     let dir = unique_chain_dir();
     let log_path = dir.join("interactions.log");
     let router = rest_router(
-        MentisDbServiceConfig::new(dir.clone(), "log-file", StorageAdapterKind::Jsonl)
+        MentisDbServiceConfig::new(dir.clone(), "log-file", StorageAdapterKind::Binary)
             .with_verbose(false)
             .with_log_file(Some(log_path.clone())),
     );
@@ -744,14 +744,14 @@ async fn mcp_router_gets_thought_by_id_and_hash() {
     let router = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "lookup-mcp",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let appended = append_thought_via_rest(
         rest_router(MentisDbServiceConfig::new(
             dir.clone(),
             "lookup-mcp",
-            StorageAdapterKind::Jsonl,
+            StorageAdapterKind::Binary,
         )),
         "lookup-mcp",
         "astro",
@@ -807,12 +807,12 @@ async fn mcp_router_traverses_thoughts_forward_and_backward() {
     let mcp = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "traverse-mcp",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let rest = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "traverse-mcp",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(rest.clone(), "traverse-mcp", "astro", "Insight", None, "t0").await;
@@ -928,7 +928,7 @@ async fn rest_router_returns_embedded_skill_markdown() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let response = router
@@ -965,7 +965,7 @@ async fn rest_router_gets_genesis_and_specific_thought() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "lookup-rest",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let first = append_thought_via_rest(
@@ -1061,7 +1061,7 @@ async fn rest_router_traverses_thoughts_with_filters_and_chunk_size() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "traverse-rest",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let first = append_thought_via_rest(
@@ -1177,7 +1177,7 @@ async fn rest_router_traversal_rejects_invalid_direction_or_locator_payloads() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "traverse-invalid",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let invalid_direction = router
@@ -1280,7 +1280,7 @@ async fn rest_router_head_still_returns_latest_thought_not_genesis() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "head-latest",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     append_thought_via_rest(
@@ -1336,7 +1336,7 @@ async fn rest_router_single_thought_lookup_returns_not_found_for_unknown_id_hash
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "missing-thought",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let missing_id = router
@@ -1663,7 +1663,7 @@ async fn rest_router_supports_shared_chain_agent_identity() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "shared-chain",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let append = router
@@ -1728,7 +1728,7 @@ async fn rest_router_searches_by_timestamp_window() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "time-window",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let first_append = router
@@ -1840,7 +1840,7 @@ async fn rest_router_appends_retrospective_with_defaults() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "shared-chain",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let append = router
@@ -1881,7 +1881,7 @@ async fn rest_router_lists_chains_and_agents() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "shared-brain",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let append_one = router
@@ -1959,7 +1959,7 @@ async fn rest_router_lists_chains_and_agents() {
         .find(|entry| entry["chain_key"] == "shared-brain")
         .unwrap();
     assert_eq!(summary["version"], 2);
-    assert_eq!(summary["storage_adapter"], "jsonl");
+    assert_eq!(summary["storage_adapter"], "binary");
     assert_eq!(summary["thought_count"], 2);
     assert_eq!(summary["agent_count"], 2);
 
@@ -2191,7 +2191,7 @@ async fn live_mcp_server_supports_standard_initialize_and_tools_list() {
     let router = standard_mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let client_addr = std::net::SocketAddr::from(([127, 0, 0, 1], 49000));
 
@@ -2592,7 +2592,7 @@ async fn rest_lexical_search_returns_ranked_scores() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let chain_key = "server-test";
     let _ = append_thought_via_rest(
@@ -2656,7 +2656,7 @@ async fn rest_lexical_search_can_match_agent_registry_text() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-test-registry",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let chain_key = "server-test-registry";
 
@@ -2734,7 +2734,7 @@ async fn rest_ranked_search_returns_graph_aware_results() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-ranked",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let chain_key = "server-ranked";
     let _seed = append_thought_via_rest(
@@ -2821,7 +2821,7 @@ async fn rest_context_bundles_returns_seed_anchored_groups() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "server-bundles",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let chain_key = "server-bundles";
 
@@ -2921,12 +2921,12 @@ async fn mcp_ranked_search_and_context_bundles_are_executable() {
     let rest = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
     let mcp = mcp_router(MentisDbServiceConfig::new(
         dir.clone(),
         chain_key,
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let _seed = append_thought_via_rest(
@@ -3053,7 +3053,7 @@ async fn bootstrap_response_includes_empty_available_skills_when_registry_is_emp
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "spawn-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let response = router
@@ -3102,7 +3102,7 @@ async fn bootstrap_response_includes_active_skills_after_skill_upload() {
     let router = rest_router(MentisDbServiceConfig::new(
         dir.clone(),
         "spawn-skill-test",
-        StorageAdapterKind::Jsonl,
+        StorageAdapterKind::Binary,
     ));
 
     let skill_markdown = r#"---

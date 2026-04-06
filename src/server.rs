@@ -173,9 +173,8 @@ pub struct MentisDbServiceConfig {
     /// chain.
     ///
     /// Existing chains always use their own on-disk format regardless of this
-    /// setting. [`StorageAdapterKind::Binary`] is the recommended default for
-    /// production use; [`StorageAdapterKind::Jsonl`] is human-readable and
-    /// convenient for development and debugging.
+    /// setting. [`StorageAdapterKind::Binary`] is the only supported format for
+    /// new chains.
     pub default_storage_adapter: StorageAdapterKind,
     /// When `true`, every read and write operation is logged at `INFO` level
     /// through the `mentisdb::interaction` logger target.
@@ -423,7 +422,7 @@ impl MentisDbServiceConfig {
 /// |---|---|---|
 /// | `MENTISDB_DIR` | `~/.cloudllm/mentisdb` | Root directory for all chain storage. |
 /// | `MENTISDB_DEFAULT_CHAIN_KEY` | `borganism-brain` | Default chain key for requests that omit one. (`MENTISDB_DEFAULT_KEY` accepted as a deprecated alias.) |
-/// | `MENTISDB_STORAGE_ADAPTER` | `binary` | Storage format for new chains (`binary` or `jsonl`). |
+/// | `MENTISDB_STORAGE_ADAPTER` | `binary` | Storage format for new chains (`binary`). |
 /// | `MENTISDB_VERBOSE` | `true` | Log each operation to the `mentisdb::interaction` target. |
 /// | `MENTISDB_LOG_FILE` | *(none)* | Optional file path for interaction logs. |
 /// | `MENTISDB_AUTO_FLUSH` | `true` | Set `false` for batched binary writes (higher throughput, reduced durability). |
@@ -1022,7 +1021,7 @@ fn rename_legacy_registry_file_if_needed(chain_dir: &Path) -> io::Result<bool> {
 /// let config = MentisDbServiceConfig::new(
 ///     PathBuf::from("/tmp/tc"),
 ///     "agent-memory",
-///     StorageAdapterKind::Jsonl,
+///     StorageAdapterKind::Binary,
 /// );
 /// let server = start_mcp_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
 /// println!("{}", server.local_addr());
@@ -1052,7 +1051,7 @@ pub async fn start_mcp_server(
 /// let config = MentisDbServiceConfig::new(
 ///     PathBuf::from("/tmp/tc"),
 ///     "agent-memory",
-///     StorageAdapterKind::Jsonl,
+///     StorageAdapterKind::Binary,
 /// );
 /// let server = start_rest_server(SocketAddr::from(([127, 0, 0, 1], 0)), config).await?;
 /// println!("{}", server.local_addr());
@@ -5439,7 +5438,7 @@ fn infer_storage_adapter_name(storage_location: &str) -> String {
     if storage_location.ends_with(".tcbin") {
         StorageAdapterKind::Binary.to_string()
     } else if storage_location.ends_with(".jsonl") {
-        StorageAdapterKind::Jsonl.to_string()
+        "jsonl".to_string()
     } else {
         "unknown".to_string()
     }

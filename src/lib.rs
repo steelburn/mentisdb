@@ -53,12 +53,12 @@ pub use skills::{
 ///
 /// ```
 /// use std::path::PathBuf;
-/// use mentisdb::{JsonlStorageAdapter, StorageAdapter};
+/// use mentisdb::{BinaryStorageAdapter, StorageAdapter};
 ///
-/// let adapter = JsonlStorageAdapter::for_chain_key(PathBuf::from("/tmp/tc_store"), "demo");
+/// let adapter = BinaryStorageAdapter::for_chain_key(PathBuf::from("/tmp/tc_store"), "demo");
 /// let location = adapter.storage_location();
 ///
-/// assert!(location.ends_with(".jsonl"));
+/// assert!(location.ends_with(".tcbin"));
 /// ```
 pub trait StorageAdapter: Send + Sync {
     /// Load all persisted thoughts in order.
@@ -111,10 +111,9 @@ fn current_schema_version() -> u32 {
 
 /// Supported durable storage formats for MentisDb.
 ///
-/// This enum lets applications select a backend without hard-coding a concrete
-/// adapter type. `Jsonl` remains the most human-inspectable option, while
-/// `Binary` stores length-prefixed serialized thoughts for more compact and
-/// efficient loading.
+/// This enum selects the backend for new chains. `Binary` is the only
+/// supported format for creating new chains; JSONL files written by older
+/// versions can still be read and migrated but cannot be used for new chains.
 ///
 /// # Example
 ///
@@ -130,7 +129,8 @@ pub enum StorageAdapterKind {
     /// Length-prefixed binary serialization of `Thought` records.
     #[default]
     Binary,
-    /// Newline-delimited JSON storage.
+    /// Legacy newline-delimited JSON storage. Kept in the registry schema for
+    /// backwards-compatibility only; cannot be used to create new chains.
     Jsonl,
 }
 
@@ -138,20 +138,24 @@ impl StorageAdapterKind {
     /// Return the stable lowercase name of this adapter kind.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Jsonl => "jsonl",
             Self::Binary => "binary",
+            Self::Jsonl => "jsonl",
         }
     }
 
     /// Return the file extension used by this adapter kind.
     pub fn file_extension(self) -> &'static str {
         match self {
-            Self::Jsonl => "jsonl",
             Self::Binary => "tcbin",
+            Self::Jsonl => "jsonl",
         }
     }
 
     /// Create a boxed storage adapter for a durable chain key.
+    ///
+    /// Returns an error if called with [`StorageAdapterKind::Jsonl`]; use
+    /// `migrate_registered_chains` to convert legacy JSONL chains to binary
+    /// before opening them.
     ///
     /// # Example
     ///
@@ -168,10 +172,7 @@ impl StorageAdapterKind {
         chain_dir: P,
         chain_key: &str,
     ) -> Box<dyn StorageAdapter> {
-        match self {
-            Self::Jsonl => Box::new(JsonlStorageAdapter::for_chain_key(chain_dir, chain_key)),
-            Self::Binary => Box::new(BinaryStorageAdapter::for_chain_key(chain_dir, chain_key)),
-        }
+        Box::new(BinaryStorageAdapter::for_chain_key(chain_dir, chain_key))
     }
 }
 
@@ -186,60 +187,34 @@ impl FromStr for StorageAdapterKind {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "jsonl" => Ok(Self::Jsonl),
             "binary" => Ok(Self::Binary),
+            "jsonl" => Ok(Self::Jsonl),
             other => Err(format!(
-                "Unsupported MentisDb storage adapter '{other}'. Expected 'jsonl' or 'binary'"
+                "Unsupported MentisDb storage adapter '{other}'. Expected 'binary'"
             )),
         }
     }
 }
 
-/// Append-only JSONL storage adapter for MentisDb.
+/// Private read-only adapter for legacy JSONL files.
 ///
-/// This is the default storage backend used by [`MentisDb::open`] and
-/// [`MentisDb::open_with_key`].
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use std::path::PathBuf;
-/// use mentisdb::{JsonlStorageAdapter, StorageAdapter};
-///
-/// let adapter = JsonlStorageAdapter::for_chain_key(PathBuf::from("/tmp/tc_jsonl"), "agent-memory");
-/// assert!(adapter.storage_location().ends_with(".jsonl"));
-/// ```
-#[derive(Debug, Clone)]
-pub struct JsonlStorageAdapter {
+/// Used only during migration; cannot be constructed outside this module.
+#[derive(Debug)]
+struct LegacyJsonlReadAdapter {
     file_path: PathBuf,
 }
 
-impl JsonlStorageAdapter {
-    /// Create a JSONL adapter for an explicit file path.
-    pub fn new(file_path: PathBuf) -> Self {
+impl LegacyJsonlReadAdapter {
+    fn new(file_path: PathBuf) -> Self {
         Self { file_path }
-    }
-
-    /// Create a JSONL adapter using the stable MentisDb filename for a chain key.
-    pub fn for_chain_key<P: AsRef<Path>>(chain_dir: P, chain_key: &str) -> Self {
-        let file_path = chain_dir
-            .as_ref()
-            .join(chain_storage_filename(chain_key, StorageAdapterKind::Jsonl));
-        Self::new(file_path)
-    }
-
-    /// Return the underlying JSONL path.
-    pub fn file_path(&self) -> &PathBuf {
-        &self.file_path
     }
 }
 
-impl StorageAdapter for JsonlStorageAdapter {
+impl StorageAdapter for LegacyJsonlReadAdapter {
     fn load_thoughts(&self) -> io::Result<Vec<Thought>> {
         if !self.file_path.exists() {
             return Ok(Vec::new());
         }
-
         let file = fs::File::open(&self.file_path)?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
@@ -259,8 +234,11 @@ impl StorageAdapter for JsonlStorageAdapter {
         Ok(entries)
     }
 
-    fn append_thought(&self, thought: &Thought) -> io::Result<()> {
-        persist_jsonl_thought(&self.file_path, thought)
+    fn append_thought(&self, _thought: &Thought) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "JSONL chains are read-only; run `mentisdbd migrate` to convert to binary.",
+        ))
     }
 
     fn storage_location(&self) -> String {
@@ -377,6 +355,9 @@ const CHAIN_REGISTRATION_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
 /// Number of append-driven agent-registry sidecar updates to batch before
 /// rewriting the per-chain registry JSON when buffered writes are enabled.
 const AGENT_REGISTRY_FLUSH_THRESHOLD: usize = FLUSH_THRESHOLD;
+
+/// Maximum allowed bincode payload size for a single thought record (DoS protection).
+const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 
 #[derive(Debug, Clone)]
 struct BackgroundWriteError {
@@ -2989,10 +2970,10 @@ impl MentisDb {
     ///
     /// ```rust,no_run
     /// use std::path::PathBuf;
-    /// use mentisdb::{JsonlStorageAdapter, MentisDb};
+    /// use mentisdb::{BinaryStorageAdapter, MentisDb};
     ///
     /// # fn main() -> std::io::Result<()> {
-    /// let adapter = JsonlStorageAdapter::for_chain_key(PathBuf::from("/tmp/tc_custom"), "project-memory");
+    /// let adapter = BinaryStorageAdapter::for_chain_key(PathBuf::from("/tmp/tc_custom"), "project-memory");
     /// let chain = MentisDb::open_with_storage(Box::new(adapter))?;
     /// assert!(chain.thoughts().is_empty());
     /// # Ok(())
@@ -3079,11 +3060,23 @@ impl MentisDb {
     }
 
     /// Open or create a chain using an explicit stable chain key and default adapter preference.
+    ///
+    /// Returns an error if `default_storage_kind` is [`StorageAdapterKind::Jsonl`]. JSONL chains
+    /// are no longer supported for active use; run `mentisdbd migrate` first to convert to binary.
     pub fn open_with_key_and_storage_kind<P: AsRef<Path>>(
         chain_dir: P,
         chain_key: &str,
         default_storage_kind: StorageAdapterKind,
     ) -> io::Result<Self> {
+        if default_storage_kind == StorageAdapterKind::Jsonl {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "JSONL chains are no longer supported for active use; \
+                     please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+                ),
+            ));
+        }
         fs::create_dir_all(chain_dir.as_ref())?;
         let storage_kind =
             resolve_storage_kind_for_chain(chain_dir.as_ref(), chain_key, default_storage_kind)?;
@@ -5578,10 +5571,8 @@ pub fn chain_filename(
 /// ```
 /// use mentisdb::{chain_storage_filename, StorageAdapterKind};
 ///
-/// let jsonl = chain_storage_filename("agent1", StorageAdapterKind::Jsonl);
 /// let binary = chain_storage_filename("agent1", StorageAdapterKind::Binary);
 ///
-/// assert!(jsonl.ends_with(".jsonl"));
 /// assert!(binary.ends_with(".tcbin"));
 /// ```
 pub fn chain_storage_filename(chain_key: &str, kind: StorageAdapterKind) -> String {
@@ -5617,15 +5608,17 @@ pub fn chain_storage_filename(chain_key: &str, kind: StorageAdapterKind) -> Stri
 /// ```
 /// use mentisdb::{chain_key_from_storage_filename, chain_storage_filename, StorageAdapterKind};
 ///
-/// let filename = chain_storage_filename("borganism-brain", StorageAdapterKind::Jsonl);
+/// let filename = chain_storage_filename("borganism-brain", StorageAdapterKind::Binary);
 /// let chain_key = chain_key_from_storage_filename(&filename).unwrap();
 ///
 /// assert_eq!(chain_key, "borganism-brain");
 /// ```
 pub fn chain_key_from_storage_filename(filename: &str) -> Option<String> {
     let (stem, extension) = filename.rsplit_once('.')?;
-    if extension != StorageAdapterKind::Jsonl.file_extension()
-        && extension != StorageAdapterKind::Binary.file_extension()
+    // Accept both binary (.tcbin) and legacy jsonl (.jsonl) extensions so that
+    // migration discovery continues to work for old files on disk.
+    if extension != StorageAdapterKind::Binary.file_extension()
+        && extension != StorageAdapterKind::Jsonl.file_extension()
     {
         return None;
     }
@@ -5896,6 +5889,15 @@ fn resolve_storage_kind_for_chain(
 ) -> io::Result<StorageAdapterKind> {
     let registry = load_mentisdb_registry(chain_dir)?;
     if let Some(entry) = registry.chains.get(chain_key) {
+        if entry.storage_adapter == StorageAdapterKind::Jsonl {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "JSONL chains are no longer supported for active use; \
+                     please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+                ),
+            ));
+        }
         return Ok(entry.storage_adapter);
     }
 
@@ -5910,7 +5912,13 @@ fn resolve_storage_kind_for_chain(
         .exists();
 
     match (jsonl_exists, binary_exists) {
-        (true, false) => Ok(StorageAdapterKind::Jsonl),
+        (true, false) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "JSONL chains are no longer supported for active use; \
+                 please run `mentisdbd migrate` first to convert chain '{chain_key}' to binary."
+            ),
+        )),
         (false, true) => Ok(StorageAdapterKind::Binary),
         (false, false) => Ok(default_kind),
         (true, true) => Err(io::Error::new(
@@ -6187,7 +6195,7 @@ fn storage_adapter_for_path(
     path: &Path,
 ) -> Box<dyn StorageAdapter> {
     match storage_kind {
-        StorageAdapterKind::Jsonl => Box::new(JsonlStorageAdapter::new(path.to_path_buf())),
+        StorageAdapterKind::Jsonl => Box::new(LegacyJsonlReadAdapter::new(path.to_path_buf())),
         StorageAdapterKind::Binary => Box::new(BinaryStorageAdapter::new(path.to_path_buf())),
     }
 }
@@ -6506,46 +6514,54 @@ fn load_legacy_v0_jsonl_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThoug
     Ok(entries)
 }
 
-fn load_legacy_v0_binary_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThoughtV0>> {
-    if !file_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut file = fs::File::open(file_path)?;
+/// Read all length-prefixed bincode-encoded records from an open `Read` source.
+///
+/// Each record is: `[u64 little-endian length][bincode payload]`.
+/// Returns `Err` if any record exceeds `MAX_THOUGHT_PAYLOAD_BYTES` (DoS protection)
+/// or if bincode decoding fails.
+fn read_length_prefixed_thoughts<T>(reader: &mut impl Read) -> io::Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
     let mut thoughts = Vec::new();
-
     loop {
         let mut length_bytes = [0_u8; 8];
-        match file.read_exact(&mut length_bytes) {
+        match reader.read_exact(&mut length_bytes) {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(error),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
         }
-
-        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // DoS protection: 10 MB limit
         let length_u64 = u64::from_le_bytes(length_bytes);
         if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"),
+                format!(
+                    "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
+                ),
             ));
         }
-        let length = length_u64 as usize;
-        let mut payload = vec![0_u8; length];
-        file.read_exact(&mut payload)?;
-        let (thought, _): (LegacyThoughtV0, usize) =
+        let mut payload = vec![0_u8; length_u64 as usize];
+        reader.read_exact(&mut payload)?;
+        let (thought, _): (T, usize) =
             bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
-                |error| {
+                |e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to deserialize legacy v0 binary thought: {error}"),
+                        format!("Failed to deserialize thought: {e}"),
                     )
                 },
             )?;
         thoughts.push(thought);
     }
-
     Ok(thoughts)
+}
+
+fn load_legacy_v0_binary_thoughts(file_path: &Path) -> io::Result<Vec<LegacyThoughtV0>> {
+    if !file_path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut file = fs::File::open(file_path)?;
+    read_length_prefixed_thoughts(&mut file)
 }
 
 fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Thought>, AgentRegistry) {
@@ -6946,42 +6962,8 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
     if !file_path.exists() {
         return Ok(Vec::new());
     }
-
     let mut file = fs::File::open(file_path)?;
-    let mut thoughts = Vec::new();
-
-    loop {
-        let mut length_bytes = [0_u8; 8];
-        match file.read_exact(&mut length_bytes) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(error),
-        }
-
-        const MAX_THOUGHT_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024; // DoS protection: 10 MB limit
-        let length_u64 = u64::from_le_bytes(length_bytes);
-        if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"),
-            ));
-        }
-        let length = length_u64 as usize;
-        let mut payload = vec![0_u8; length];
-        file.read_exact(&mut payload)?;
-        let (thought, _bytes_read): (Thought, usize) =
-            bincode::serde::decode_from_slice(&payload, bincode::config::standard()).map_err(
-                |error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to deserialize binary thought: {error}"),
-                    )
-                },
-            )?;
-        thoughts.push(thought);
-    }
-
-    Ok(thoughts)
+    read_length_prefixed_thoughts(&mut file)
 }
 
 fn persist_binary_thought(file_path: &Path, thought: &Thought) -> io::Result<()> {

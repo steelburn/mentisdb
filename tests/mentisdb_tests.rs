@@ -7,9 +7,9 @@ use std::time::Duration;
 use mentisdb::{
     chain_filename, chain_key_from_storage_filename, chain_storage_filename,
     load_registered_chains, migrate_registered_chains, migrate_registered_chains_with_adapter,
-    signable_thought_payload, AgentStatus, BinaryStorageAdapter, JsonlStorageAdapter, MentisDb,
-    PublicKeyAlgorithm, StorageAdapter, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
-    ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
+    signable_thought_payload, AgentStatus, BinaryStorageAdapter, MentisDb, PublicKeyAlgorithm,
+    StorageAdapter, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelation,
+    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
     ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType, TimeWindowUnit,
     FLUSH_THRESHOLD, MENTISDB_CURRENT_VERSION,
 };
@@ -1465,9 +1465,9 @@ fn chain_key_can_be_recovered_from_storage_filename() {
     assert!(chain_key_from_storage_filename("not-a-thoughtchain-file.txt").is_none());
 }
 
-fn write_legacy_v0_chain(dir: &PathBuf, chain_key: &str, kind: StorageAdapterKind) {
+fn write_legacy_v0_jsonl_chain(dir: &PathBuf, chain_key: &str) {
     std::fs::create_dir_all(dir).unwrap();
-    let path = dir.join(chain_storage_filename(chain_key, kind));
+    let path = dir.join(chain_storage_filename(chain_key, StorageAdapterKind::Jsonl));
     let legacy = LegacyThoughtV0Record {
         schema_version: 1,
         id: Uuid::new_v4(),
@@ -1489,24 +1489,45 @@ fn write_legacy_v0_chain(dir: &PathBuf, chain_key: &str, kind: StorageAdapterKin
         prev_hash: String::new(),
         hash: "legacy-hash".to_string(),
     };
+    std::fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+    )
+    .unwrap();
+}
 
-    match kind {
-        StorageAdapterKind::Jsonl => {
-            std::fs::write(
-                &path,
-                format!("{}\n", serde_json::to_string(&legacy).unwrap()),
-            )
-            .unwrap();
-        }
-        StorageAdapterKind::Binary => {
-            let payload =
-                bincode::serde::encode_to_vec(&legacy, bincode::config::standard()).unwrap();
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(&payload);
-            std::fs::write(&path, bytes).unwrap();
-        }
-    }
+fn write_legacy_v0_binary_chain(dir: &PathBuf, chain_key: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    let legacy = LegacyThoughtV0Record {
+        schema_version: 1,
+        id: Uuid::new_v4(),
+        index: 0,
+        timestamp: chrono::Utc::now(),
+        session_id: None,
+        agent_id: "legacy-agent".to_string(),
+        signing_key_id: None,
+        thought_signature: None,
+        thought_type: ThoughtType::Insight,
+        role: ThoughtRole::Memory,
+        content: "Legacy thought content".to_string(),
+        confidence: Some(0.8),
+        importance: 0.9,
+        tags: vec!["legacy".to_string()],
+        concepts: vec!["migration".to_string()],
+        refs: vec![],
+        relations: vec![],
+        prev_hash: String::new(),
+        hash: "legacy-hash".to_string(),
+    };
+    let payload = bincode::serde::encode_to_vec(&legacy, bincode::config::standard()).unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    std::fs::write(&path, bytes).unwrap();
 }
 
 #[test]
@@ -1611,62 +1632,105 @@ fn agent_registry_admin_methods_manage_metadata_and_keys() {
 }
 
 #[test]
-fn migrate_v0_jsonl_and_binary_chains_to_v1() {
-    for kind in [StorageAdapterKind::Jsonl, StorageAdapterKind::Binary] {
-        let dir = unique_chain_dir();
-        let chain_key = format!("legacy-{kind}");
-        write_legacy_v0_chain(&dir, &chain_key, kind);
-
-        let reports = migrate_registered_chains(&dir, |_| {}).unwrap();
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].chain_key, chain_key);
-        assert_eq!(reports[0].storage_adapter, StorageAdapterKind::Binary);
-        assert_eq!(reports[0].to_version, MENTISDB_CURRENT_VERSION);
-
-        let registry = load_registered_chains(&dir).unwrap();
-        let entry = registry.chains.get(&chain_key).unwrap();
-        assert_eq!(entry.version, MENTISDB_CURRENT_VERSION);
-        assert_eq!(entry.storage_adapter, StorageAdapterKind::Binary);
-        assert_eq!(entry.thought_count, 1);
-
-        let chain = MentisDb::open_with_key(&dir, &chain_key).unwrap();
-        assert_eq!(chain.thoughts().len(), 1);
-        assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
-        assert!(chain.thoughts()[0].signing_key_id.is_none());
-        let record = chain.agent_registry().agents.get("legacy-agent").unwrap();
-        assert_eq!(record.display_name, "legacy-agent");
-        let active_path = dir.join(chain_storage_filename(
-            &chain_key,
-            StorageAdapterKind::Binary,
-        ));
-        assert!(active_path.exists());
-
-        let archived = dir
-            .join("migrations")
-            .join(format!("v{}_to_v{}", 0, MENTISDB_CURRENT_VERSION))
-            .join(chain_storage_filename(&chain_key, kind));
-        assert!(archived.exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[test]
-fn migrate_v0_chains_can_target_an_explicit_storage_adapter() {
+fn migrate_v0_jsonl_chain_to_binary() {
     let dir = unique_chain_dir();
-    let chain_key = "legacy-jsonl-explicit";
-    write_legacy_v0_chain(&dir, chain_key, StorageAdapterKind::Binary);
+    let chain_key = "legacy-jsonl";
+    write_legacy_v0_jsonl_chain(&dir, chain_key);
 
-    let reports =
-        migrate_registered_chains_with_adapter(&dir, StorageAdapterKind::Jsonl, |_| {}).unwrap();
+    let reports = migrate_registered_chains(&dir, |_| {}).unwrap();
     assert_eq!(reports.len(), 1);
-    assert_eq!(reports[0].storage_adapter, StorageAdapterKind::Jsonl);
+    assert_eq!(reports[0].chain_key, chain_key);
+    assert_eq!(reports[0].storage_adapter, StorageAdapterKind::Binary);
+    assert_eq!(reports[0].to_version, MENTISDB_CURRENT_VERSION);
 
     let registry = load_registered_chains(&dir).unwrap();
     let entry = registry.chains.get(chain_key).unwrap();
-    assert_eq!(entry.storage_adapter, StorageAdapterKind::Jsonl);
+    assert_eq!(entry.version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(entry.storage_adapter, StorageAdapterKind::Binary);
+    assert_eq!(entry.thought_count, 1);
 
-    let active_path = dir.join(chain_storage_filename(chain_key, StorageAdapterKind::Jsonl));
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 1);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert!(chain.thoughts()[0].signing_key_id.is_none());
+    let record = chain.agent_registry().agents.get("legacy-agent").unwrap();
+    assert_eq!(record.display_name, "legacy-agent");
+    let active_path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    assert!(active_path.exists());
+
+    let archived = dir
+        .join("migrations")
+        .join(format!("v{}_to_v{}", 0, MENTISDB_CURRENT_VERSION))
+        .join(chain_storage_filename(chain_key, StorageAdapterKind::Jsonl));
+    assert!(archived.exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v0_binary_chain_to_latest() {
+    let dir = unique_chain_dir();
+    let chain_key = "legacy-binary";
+    write_legacy_v0_binary_chain(&dir, chain_key);
+
+    let reports = migrate_registered_chains(&dir, |_| {}).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].chain_key, chain_key);
+    assert_eq!(reports[0].storage_adapter, StorageAdapterKind::Binary);
+    assert_eq!(reports[0].to_version, MENTISDB_CURRENT_VERSION);
+
+    let registry = load_registered_chains(&dir).unwrap();
+    let entry = registry.chains.get(chain_key).unwrap();
+    assert_eq!(entry.version, MENTISDB_CURRENT_VERSION);
+    assert_eq!(entry.storage_adapter, StorageAdapterKind::Binary);
+    assert_eq!(entry.thought_count, 1);
+
+    let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+    assert_eq!(chain.thoughts().len(), 1);
+    assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
+    assert!(chain.thoughts()[0].signing_key_id.is_none());
+    let record = chain.agent_registry().agents.get("legacy-agent").unwrap();
+    assert_eq!(record.display_name, "legacy-agent");
+    let active_path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
+    assert!(active_path.exists());
+
+    let archived = dir
+        .join("migrations")
+        .join(format!("v{}_to_v{}", 0, MENTISDB_CURRENT_VERSION))
+        .join(chain_storage_filename(
+            chain_key,
+            StorageAdapterKind::Binary,
+        ));
+    assert!(archived.exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_v0_chains_with_explicit_binary_adapter() {
+    let dir = unique_chain_dir();
+    let chain_key = "legacy-binary-explicit";
+    write_legacy_v0_binary_chain(&dir, chain_key);
+
+    let reports =
+        migrate_registered_chains_with_adapter(&dir, StorageAdapterKind::Binary, |_| {}).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].storage_adapter, StorageAdapterKind::Binary);
+
+    let registry = load_registered_chains(&dir).unwrap();
+    let entry = registry.chains.get(chain_key).unwrap();
+    assert_eq!(entry.storage_adapter, StorageAdapterKind::Binary);
+
+    let active_path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
     assert!(active_path.exists());
     let archived = dir
         .join("migrations")
@@ -1678,7 +1742,7 @@ fn migrate_v0_chains_can_target_an_explicit_storage_adapter() {
     assert!(archived.exists());
 
     let chain =
-        MentisDb::open_with_key_and_storage_kind(&dir, chain_key, StorageAdapterKind::Jsonl)
+        MentisDb::open_with_key_and_storage_kind(&dir, chain_key, StorageAdapterKind::Binary)
             .unwrap();
     assert_eq!(chain.thoughts().len(), 1);
     assert_eq!(chain.thoughts()[0].schema_version, MENTISDB_CURRENT_VERSION);
@@ -1688,13 +1752,23 @@ fn migrate_v0_chains_can_target_an_explicit_storage_adapter() {
 
 #[test]
 fn current_version_jsonl_chain_is_reconciled_to_default_binary_storage() {
+    use mentisdb::{AgentRecord, AgentRegistry, MentisDbRegistration, MentisDbRegistry};
+    use std::collections::BTreeMap;
+
     let dir = unique_chain_dir();
+    std::fs::create_dir_all(&dir).unwrap();
     let chain_key = "current-jsonl";
 
+    // Write a raw .jsonl file with a current-schema Thought, plus the companion
+    // agent-registry sidecar and mentisdb-registry.json, all declaring
+    // storage_adapter=Jsonl. This simulates a chain that was written by an older
+    // version of MentisDb that still used JSONL as its active format.
     {
-        let adapter = JsonlStorageAdapter::for_chain_key(&dir, chain_key);
-        let mut chain = MentisDb::open_with_storage(Box::new(adapter)).unwrap();
-        chain
+        // Use a throwaway binary chain to produce a properly hashed Thought.
+        let tmp_dir = dir.join("_tmp_setup");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let mut tmp_chain = MentisDb::open_with_key(&tmp_dir, "tmp").unwrap();
+        tmp_chain
             .append_thought(
                 "legacy-agent",
                 ThoughtInput::new(ThoughtType::Insight, "Current schema chain in JSONL.")
@@ -1702,6 +1776,77 @@ fn current_version_jsonl_chain_is_reconciled_to_default_binary_storage() {
                     .with_agent_owner("legacy-team"),
             )
             .unwrap();
+        let thought = tmp_chain.thoughts()[0].clone();
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
+
+        // Write the thought as raw JSONL.
+        let jsonl_filename = chain_storage_filename(chain_key, StorageAdapterKind::Jsonl);
+        let jsonl_path = dir.join(&jsonl_filename);
+        std::fs::write(
+            &jsonl_path,
+            format!("{}\n", serde_json::to_string(&thought).unwrap()),
+        )
+        .unwrap();
+
+        // Write the agent-registry sidecar (.agents.json) for the jsonl chain.
+        let stem = jsonl_filename
+            .strip_suffix(".jsonl")
+            .unwrap_or(&jsonl_filename);
+        let agents_path = dir.join(format!("{stem}.agents.json"));
+        let now = chrono::Utc::now();
+        let mut agent_map: BTreeMap<String, AgentRecord> = BTreeMap::new();
+        agent_map.insert(
+            "legacy-agent".to_string(),
+            AgentRecord {
+                agent_id: "legacy-agent".to_string(),
+                display_name: "Legacy Agent".to_string(),
+                owner: Some("legacy-team".to_string()),
+                description: None,
+                aliases: vec![],
+                public_keys: vec![],
+                status: mentisdb::AgentStatus::Active,
+                first_seen_index: Some(0),
+                last_seen_index: Some(0),
+                first_seen_at: Some(now),
+                last_seen_at: Some(now),
+                thought_count: 1,
+            },
+        );
+        let agent_registry = AgentRegistry { agents: agent_map };
+        std::fs::write(
+            &agents_path,
+            serde_json::to_string_pretty(&agent_registry).unwrap(),
+        )
+        .unwrap();
+
+        // Write mentisdb-registry.json declaring this chain as Jsonl at current version.
+        let storage_location = jsonl_path.display().to_string();
+        let registry = MentisDbRegistry {
+            version: 1,
+            chains: {
+                let mut map = BTreeMap::new();
+                map.insert(
+                    chain_key.to_string(),
+                    MentisDbRegistration {
+                        chain_key: chain_key.to_string(),
+                        version: MENTISDB_CURRENT_VERSION,
+                        storage_adapter: StorageAdapterKind::Jsonl,
+                        storage_location,
+                        thought_count: 1,
+                        agent_count: 1,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                );
+                map
+            },
+        };
+        let registry_path = dir.join("mentisdb-registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_string_pretty(&registry).unwrap(),
+        )
+        .unwrap();
     }
 
     let before = load_registered_chains(&dir).unwrap();
