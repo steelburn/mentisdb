@@ -281,6 +281,25 @@ Identity reuse keeps the chain dense and useful. Sharding memories across many n
 
 Two distinct Summary patterns bookend every session. Both are important.
 
+### Step 0 — Auto-Select the Right Chain and Agent
+
+Before writing any memory, identify where you are and who you are. Do this at the start of every session:
+
+1. **Detect the project context** — note the current working directory, repository name, or any project context provided by the harness or user.
+2. **List available chains** — call `mentisdb_list_chains`.
+   - **No chains exist yet (first-time user):** Explain briefly: *"A memory chain is a named, persistent store where I'll save decisions, lessons, and context so every future session picks up where we left off."* Then ask: *"Would you like to create one? What should it be called — the project or repository name works well."* Once the user confirms a name, call `mentisdb_bootstrap(chain_key="<user-chosen-name>")` to create it and continue.
+   - **One or more chains exist:** Choose the `chain_key` whose name most closely matches the current project, repository, or working-folder name. If two candidates are close, call `mentisdb_head` on each and prefer the one whose recent thoughts match the current work.
+3. **Call bootstrap** — call `mentisdb_bootstrap(chain_key="<chosen-key>")` to open the chain and receive the list of available skills.
+4. **Pick the agent identity** — call `mentisdb_list_agents` filtered to the chosen chain and select the existing specialist whose role or prior work best matches the current task. Read the most recent context of close candidates before choosing.
+5. **Load recent memory** — call `mentisdb_recent_context` as that agent to recover where things left off.
+6. **Load the skill** — read `mentisdb://skill/core` via `resources/read` (or `mentisdb_skill_md` as fallback).
+
+Only after completing steps 1–6 should you begin writing new thoughts or taking action.
+
+Default chain selection rule: prefer an exact name match, then prefix/suffix match, then the chain with the most recent activity thematically closest to the project.
+
+Default agent selection rule: prefer an existing specialist over creating a new one. Only register a new identity if no existing agent fits the role or the user explicitly requested a new persona.
+
 ### Bootstrap Memory (First-Ever Join)
 
 Only do this when the identity is truly new to the chain.
