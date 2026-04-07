@@ -1,4 +1,4 @@
-0.7.8.26 APR/06/2026
+0.8.0.26 APR/07/2026
  - security(skills): SkillReadOutput wrapper — SkillRegistry::read_skill() now returns
    SkillReadOutput { content, warnings, status } instead of a plain String, so callers
    can no longer silently ignore skill warnings or revocation status
