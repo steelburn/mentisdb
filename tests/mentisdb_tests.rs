@@ -2279,15 +2279,15 @@ fn patch_chain_file_to_legacy_hashes(path: &std::path::Path, thoughts: &mut [Tho
         std::fs::remove_file(path).unwrap();
     }
     for thought in thoughts.iter() {
-        let payload =
-            bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
+        let payload = bincode::serde::encode_to_vec(thought, bincode::config::standard()).unwrap();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .unwrap();
         use std::io::Write;
-        file.write_all(&(payload.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&(payload.len() as u64).to_le_bytes())
+            .unwrap();
         file.write_all(&payload).unwrap();
     }
 }
@@ -2304,15 +2304,22 @@ fn test_hash_rehash_migration_v077_to_v078() {
             .append("agent1", ThoughtType::Decision, "Use Redis for caching")
             .unwrap();
         chain
-            .append("agent1", ThoughtType::Insight, "Redis fits our latency needs")
+            .append(
+                "agent1",
+                ThoughtType::Insight,
+                "Redis fits our latency needs",
+            )
             .unwrap();
     }
 
     // 2. Load the thoughts and patch hashes back to legacy JSON algorithm,
     //    simulating a chain file written by mentisdb ≤ 0.7.7.
-    let chain_path = dir.join(chain_storage_filename(chain_key, StorageAdapterKind::Binary));
+    let chain_path = dir.join(chain_storage_filename(
+        chain_key,
+        StorageAdapterKind::Binary,
+    ));
     {
-        let mut chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
+        let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
         let mut thoughts: Vec<Thought> = chain.thoughts().to_vec();
         patch_chain_file_to_legacy_hashes(&chain_path, &mut thoughts);
     }
@@ -2338,7 +2345,10 @@ fn test_hash_rehash_migration_v077_to_v078() {
     // 5. After migration the chain opens and passes integrity with bincode hashes.
     let chain = MentisDb::open_with_key(&dir, chain_key).unwrap();
     assert_eq!(chain.thoughts().len(), 2);
-    assert!(chain.verify_integrity(), "chain must pass bincode integrity after migration");
+    assert!(
+        chain.verify_integrity(),
+        "chain must pass bincode integrity after migration"
+    );
 
     // 6. A second migration run is a no-op (no legacy hashes remain).
     let count2 = migrate_chain_hash_algorithm(&dir, |_| {}).unwrap();
