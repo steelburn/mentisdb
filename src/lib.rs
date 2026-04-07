@@ -4266,36 +4266,49 @@ impl MentisDb {
     /// `mentisdbd` uses this when it opens a chain so vector sidecars remain
     /// enabled across daemon restarts.
     pub fn apply_persisted_managed_vector_sidecars(&mut self) -> io::Result<()> {
-        let config = self.persisted_managed_vector_sidecar_config()?;
-        for provider in config.providers {
-            let metadata = provider.provider_kind.metadata();
-            if provider.enabled {
-                match provider.provider_kind {
-                    ManagedVectorProviderKind::LocalTextV1 => {
-                        self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+        // When compiled with local-embeddings, always use FastEmbedMiniLM and
+        // skip LocalTextV1 entirely — the SHA256 provider adds noise, not signal.
+        #[cfg(feature = "local-embeddings")]
+        {
+            self.unmanage_vector_sidecar(
+                &ManagedVectorProviderKind::LocalTextV1.metadata(),
+            );
+            match crate::search::FastEmbedProvider::try_new() {
+                Ok(p) => {
+                    self.manage_vector_sidecar(p)
+                        .map_err(|e| io::Error::other(format!("fastembed sidecar: {e}")))?;
+                }
+                Err(e) => {
+                    log::warn!("FastEmbed provider init failed, skipping: {e}");
+                }
+            }
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "local-embeddings"))]
+        {
+            let config = self.persisted_managed_vector_sidecar_config()?;
+            for provider in config.providers {
+                let metadata = provider.provider_kind.metadata();
+                if provider.enabled {
+                    match provider.provider_kind {
+                        ManagedVectorProviderKind::LocalTextV1 => {
+                            self.manage_vector_sidecar(
+                                crate::search::LocalTextEmbeddingProvider::new(),
+                            )
                             .map_err(
-                                vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                                vector_search_error_to_io::<
+                                    crate::search::LocalTextEmbeddingError,
+                                >,
                             )?;
-                    }
-                    #[cfg(feature = "local-embeddings")]
-                    ManagedVectorProviderKind::FastEmbedMiniLM => {
-                        match crate::search::FastEmbedProvider::try_new() {
-                            Ok(p) => {
-                                self.manage_vector_sidecar(p).map_err(|e| {
-                                    io::Error::other(format!("fastembed sidecar: {e}"))
-                                })?;
-                            }
-                            Err(e) => {
-                                log::warn!("FastEmbed provider init failed, skipping: {e}");
-                            }
                         }
                     }
+                } else {
+                    self.unmanage_vector_sidecar(&metadata);
                 }
-            } else {
-                self.unmanage_vector_sidecar(&metadata);
             }
+            Ok(())
         }
-        Ok(())
     }
 
     /// Return runtime status for every persistently configured managed vector
