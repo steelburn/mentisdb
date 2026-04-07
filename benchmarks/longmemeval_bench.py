@@ -81,6 +81,10 @@ def chain_thought_count(base_url: str, chain_key: str) -> int:
 
 def append_turn(base_url: str, chain_key: str, content: str, role: str,
                 session_id: str, retries: int = 3) -> None:
+    # User turns get higher importance: preferences, facts, and personal statements
+    # are always from the user role. Assistant turns tend to be verbose and dominate
+    # BM25 scoring; downweighting them improves retrieval of user-originated evidence.
+    importance = 0.8 if role == "user" else 0.2
     for attempt in range(retries):
         try:
             _post(base_url, "/v1/thoughts", {
@@ -88,7 +92,7 @@ def append_turn(base_url: str, chain_key: str, content: str, role: str,
                 "thought_type": "FactLearned",
                 "content": content,
                 "agent_id": role,
-                "importance": 0.5,
+                "importance": importance,
                 "tags": [f"session:{session_id}", f"role:{role}"],
             })
             return
