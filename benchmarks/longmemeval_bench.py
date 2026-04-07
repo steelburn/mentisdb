@@ -75,6 +75,19 @@ def append_turn(base_url: str, chain_key: str, content: str, role: str,
             time.sleep(0.5 * (attempt + 1))
 
 
+def rebuild_vectors(base_url: str, chain_key: str) -> None:
+    """Trigger vector sidecar rebuild for the chain (activates semantic scoring)."""
+    try:
+        resp = _post(base_url, "/v1/vectors/rebuild", {
+            "chain_key": chain_key,
+            "provider_key": "local-text-v1",
+        }, timeout=300)
+        indexed = resp.get("status", {}).get("indexed_thought_count")
+        print(f"  Vector sidecar rebuilt — {indexed} thoughts indexed.", flush=True)
+    except Exception as e:
+        print(f"  WARNING: vector rebuild failed (lexical-only scoring): {e}", flush=True)
+
+
 def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list[dict]:
     resp = _post(base_url, "/v1/ranked-search", {
         "chain_key": chain_key,
@@ -216,6 +229,8 @@ def main():
         ingest(args.base_url, args.chain, instances, args.workers)
         print(f"  Ingestion done in {time.monotonic()-t0:.1f}s\n", flush=True)
         time.sleep(1)  # brief settle
+        print("Building vector sidecar…", flush=True)
+        rebuild_vectors(args.base_url, args.chain)
 
     t0 = time.monotonic()
     overall, by_type = evaluate(args.base_url, args.chain, instances, args.top_k)

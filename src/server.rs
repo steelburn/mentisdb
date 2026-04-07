@@ -40,12 +40,13 @@
 //! - `POST /v1/skills/revoke`
 
 use crate::{
-    load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, MentisDb, PublicKeyAlgorithm,
-    RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery, SkillRegistry,
-    SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload, SkillVersionSummary,
-    StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery, ThoughtRelationKind, ThoughtRole,
-    ThoughtTimeWindow, ThoughtTraversalAnchor, ThoughtTraversalCursor, ThoughtTraversalDirection,
-    ThoughtTraversalRequest, ThoughtType, TimeWindowUnit, MENTISDB_CURRENT_VERSION,
+    load_registered_chains, AgentPublicKey, AgentRecord, AgentStatus, ManagedVectorProviderKind,
+    MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery, SkillFormat, SkillQuery,
+    SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary, SkillUpload,
+    SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
+    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
+    ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
+    TimeWindowUnit, MENTISDB_CURRENT_VERSION,
 };
 use async_trait::async_trait;
 use axum::extract::{Query, State};
@@ -1395,6 +1396,7 @@ fn rest_router_with_service(service: Arc<MentisDbService>) -> Router {
             post(rest_revoke_agent_key_handler),
         )
         .route("/v1/agents/disable", post(rest_disable_agent_handler))
+        .route("/v1/vectors/rebuild", post(rest_rebuild_vectors_handler))
         .with_state(service)
 }
 
@@ -3283,6 +3285,34 @@ impl MentisDbService {
         }
         Ok(agent)
     }
+
+    async fn rebuild_vectors(
+        &self,
+        request: RebuildVectorsRequest,
+    ) -> Result<RebuildVectorsResponse, Box<dyn Error + Send + Sync>> {
+        let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
+        let provider_kind = match request.provider_key.as_deref().unwrap_or("local-text-v1") {
+            "local-text-v1" => ManagedVectorProviderKind::LocalTextV1,
+            other => {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown vector provider '{other}'"),
+                )))
+            }
+        };
+        let chain = self.get_chain(Some(&chain_key), None).await?;
+        let mut chain = chain.write().await;
+        let status = chain.rebuild_managed_vector_sidecar_from_scratch(provider_kind)?;
+        self.log_interaction(InteractionLogEntry {
+            access: "write",
+            operation: "rebuild_vectors",
+            chain_key: chain_key.clone(),
+            metadata: InteractionMetadata::default(),
+            result_count: Some(status.indexed_thought_count.unwrap_or(0)),
+            note: Some(format!("provider={}", status.provider_key)),
+        });
+        Ok(RebuildVectorsResponse { chain_key, status })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3821,6 +3851,18 @@ struct DisableAgentRequest {
     agent_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RebuildVectorsRequest {
+    chain_key: Option<String>,
+    provider_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RebuildVectorsResponse {
+    chain_key: String,
+    status: crate::ManagedVectorSidecarStatus,
+}
+
 #[derive(Debug, Serialize)]
 struct ListChainsResponse {
     default_chain_key: String,
@@ -4264,6 +4306,13 @@ async fn rest_disable_agent_handler(
     Json(request): Json<DisableAgentRequest>,
 ) -> Result<Json<AgentRecordResponse>, (StatusCode, Json<Value>)> {
     service_call(service.disable_agent(request).await)
+}
+
+async fn rest_rebuild_vectors_handler(
+    State(service): State<Arc<MentisDbService>>,
+    Json(request): Json<RebuildVectorsRequest>,
+) -> Result<Json<RebuildVectorsResponse>, (StatusCode, Json<Value>)> {
+    service_call(service.rebuild_vectors(request).await)
 }
 
 async fn rest_recent_context_handler(
