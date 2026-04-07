@@ -2791,25 +2791,39 @@ const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
 pub enum ManagedVectorProviderKind {
     /// Deterministic in-process hashed text embeddings used by `mentisdbd`.
     LocalTextV1,
+    /// Real semantic embeddings via the `fastembed` AllMiniLML6V2 ONNX model.
+    ///
+    /// Only available when compiled with the `local-embeddings` feature.
+    /// If a persisted config references this variant but the feature is absent,
+    /// the variant deserializes successfully (serde knows the string) and the
+    /// caller skips it with a log warning rather than panicking.
+    #[cfg(feature = "local-embeddings")]
+    FastEmbedMiniLM,
 }
 
 impl ManagedVectorProviderKind {
     fn key(self) -> &'static str {
         match self {
             Self::LocalTextV1 => "local-text-v1",
+            #[cfg(feature = "local-embeddings")]
+            Self::FastEmbedMiniLM => "fastembed-minilm",
         }
     }
 
     fn metadata(self) -> crate::search::EmbeddingMetadata {
-        <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
-            &self.provider(),
-        )
-        .clone()
-    }
-
-    fn provider(self) -> crate::search::LocalTextEmbeddingProvider {
         match self {
-            Self::LocalTextV1 => crate::search::LocalTextEmbeddingProvider::new(),
+            Self::LocalTextV1 => {
+                <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
+                    &crate::search::LocalTextEmbeddingProvider::new(),
+                )
+                .clone()
+            }
+            #[cfg(feature = "local-embeddings")]
+            Self::FastEmbedMiniLM => crate::search::EmbeddingMetadata::new(
+                crate::search::FASTEMBED_MINILM_MODEL_ID,
+                crate::search::FASTEMBED_MINILM_DIMENSION,
+                crate::search::FASTEMBED_MINILM_VERSION,
+            ),
         }
     }
 }
@@ -4256,8 +4270,27 @@ impl MentisDb {
         for provider in config.providers {
             let metadata = provider.provider_kind.metadata();
             if provider.enabled {
-                self.manage_vector_sidecar(provider.provider_kind.provider())
-                    .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+                match provider.provider_kind {
+                    ManagedVectorProviderKind::LocalTextV1 => {
+                        self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                            .map_err(
+                                vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                            )?;
+                    }
+                    #[cfg(feature = "local-embeddings")]
+                    ManagedVectorProviderKind::FastEmbedMiniLM => {
+                        match crate::search::FastEmbedProvider::try_new() {
+                            Ok(p) => {
+                                self.manage_vector_sidecar(p).map_err(|e| {
+                                    io::Error::other(format!("fastembed sidecar: {e}"))
+                                })?;
+                            }
+                            Err(e) => {
+                                log::warn!("FastEmbed provider init failed, skipping: {e}");
+                            }
+                        }
+                    }
+                }
             } else {
                 self.unmanage_vector_sidecar(&metadata);
             }
@@ -4302,8 +4335,29 @@ impl MentisDb {
         config.providers = normalize_managed_vector_sidecar_configs(config.providers);
         self.save_managed_vector_sidecar_config(&config)?;
         if enabled {
-            self.manage_vector_sidecar(provider_kind.provider())
-                .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+            match provider_kind {
+                ManagedVectorProviderKind::LocalTextV1 => {
+                    self.manage_vector_sidecar(crate::search::LocalTextEmbeddingProvider::new())
+                        .map_err(
+                            vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                        )?;
+                }
+                #[cfg(feature = "local-embeddings")]
+                ManagedVectorProviderKind::FastEmbedMiniLM => {
+                    match crate::search::FastEmbedProvider::try_new() {
+                        Ok(p) => {
+                            self.manage_vector_sidecar(p).map_err(|e| {
+                                io::Error::other(format!("fastembed sidecar: {e}"))
+                            })?;
+                        }
+                        Err(e) => {
+                            return Err(io::Error::other(format!(
+                                "FastEmbed provider init failed: {e}"
+                            )));
+                        }
+                    }
+                }
+            }
         } else {
             self.unmanage_vector_sidecar(&provider_kind.metadata());
         }
@@ -4323,19 +4377,33 @@ impl MentisDb {
             .find(|provider| provider.provider_kind == provider_kind)
             .map(|provider| provider.enabled)
             .unwrap_or(true);
-        let provider = provider_kind.provider();
-        let metadata =
-            <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
-                &provider,
-            )
-            .clone();
-        self.rebuild_vector_sidecar(&provider)
-            .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
-        if enabled {
-            self.managed_vector_sidecars
-                .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
-        } else {
-            self.unmanage_vector_sidecar(&metadata);
+        match provider_kind {
+            ManagedVectorProviderKind::LocalTextV1 => {
+                let provider = crate::search::LocalTextEmbeddingProvider::new();
+                let metadata = crate::search::EmbeddingProvider::metadata(&provider).clone();
+                self.rebuild_vector_sidecar(&provider)
+                    .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
+                if enabled {
+                    self.managed_vector_sidecars
+                        .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
+                } else {
+                    self.unmanage_vector_sidecar(&metadata);
+                }
+            }
+            #[cfg(feature = "local-embeddings")]
+            ManagedVectorProviderKind::FastEmbedMiniLM => {
+                let provider = crate::search::FastEmbedProvider::try_new()
+                    .map_err(|e| io::Error::other(format!("FastEmbed init failed: {e}")))?;
+                let metadata = crate::search::EmbeddingProvider::metadata(&provider).clone();
+                self.rebuild_vector_sidecar(&provider)
+                    .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
+                if enabled {
+                    self.managed_vector_sidecars
+                        .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
+                } else {
+                    self.unmanage_vector_sidecar(&metadata);
+                }
+            }
         }
         self.managed_vector_sidecar_status(provider_kind, enabled)
     }
@@ -4346,12 +4414,8 @@ impl MentisDb {
         &mut self,
         provider_kind: ManagedVectorProviderKind,
     ) -> io::Result<ManagedVectorSidecarStatus> {
-        let provider = provider_kind.provider();
-        let path = self.vector_sidecar_path(
-            <crate::search::LocalTextEmbeddingProvider as crate::search::EmbeddingProvider>::metadata(
-                &provider,
-            ),
-        )?;
+        let metadata = provider_kind.metadata();
+        let path = self.vector_sidecar_path(&metadata)?;
         if path.exists() {
             fs::remove_file(&path)?;
         }

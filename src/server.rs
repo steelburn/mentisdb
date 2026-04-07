@@ -2085,7 +2085,11 @@ impl MentisDbService {
                     format!("invalid relation target_id '{}': {}", rel.target_id, e),
                 )) as Box<dyn Error + Send + Sync>
             })?;
-            parsed_relations.push(ThoughtRelation { kind, target_id, chain_key: None });
+            parsed_relations.push(ThoughtRelation {
+                kind,
+                target_id,
+                chain_key: None,
+            });
         }
         if !parsed_relations.is_empty() {
             input = input.with_relations(parsed_relations);
@@ -3311,6 +3315,8 @@ impl MentisDbService {
         let chain_key = self.resolve_chain_key(request.chain_key.as_deref());
         let provider_kind = match request.provider_key.as_deref().unwrap_or("local-text-v1") {
             "local-text-v1" => ManagedVectorProviderKind::LocalTextV1,
+            #[cfg(feature = "local-embeddings")]
+            "fastembed-minilm" => ManagedVectorProviderKind::FastEmbedMiniLM,
             other => {
                 return Err(Box::new(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -5701,17 +5707,17 @@ fn parse_thought_relation_kind(
     input: &str,
 ) -> Result<ThoughtRelationKind, Box<dyn Error + Send + Sync>> {
     let kind = match normalize_label(input).as_str() {
-        "references"    => ThoughtRelationKind::References,
-        "summarizes"    => ThoughtRelationKind::Summarizes,
-        "corrects"      => ThoughtRelationKind::Corrects,
-        "invalidates"   => ThoughtRelationKind::Invalidates,
-        "causedby"      => ThoughtRelationKind::CausedBy,
-        "supports"      => ThoughtRelationKind::Supports,
-        "contradicts"   => ThoughtRelationKind::Contradicts,
-        "derivedfrom"   => ThoughtRelationKind::DerivedFrom,
+        "references" => ThoughtRelationKind::References,
+        "summarizes" => ThoughtRelationKind::Summarizes,
+        "corrects" => ThoughtRelationKind::Corrects,
+        "invalidates" => ThoughtRelationKind::Invalidates,
+        "causedby" => ThoughtRelationKind::CausedBy,
+        "supports" => ThoughtRelationKind::Supports,
+        "contradicts" => ThoughtRelationKind::Contradicts,
+        "derivedfrom" => ThoughtRelationKind::DerivedFrom,
         "continuesfrom" => ThoughtRelationKind::ContinuesFrom,
-        "relatedto"     => ThoughtRelationKind::RelatedTo,
-        "supersedes"    => ThoughtRelationKind::Supersedes,
+        "relatedto" => ThoughtRelationKind::RelatedTo,
+        "supersedes" => ThoughtRelationKind::Supersedes,
         _ => return Err(format!("Unknown ThoughtRelationKind '{input}'").into()),
     };
     Ok(kind)

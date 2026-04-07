@@ -876,12 +876,15 @@ async fn api_chains(
         let key = entry.key().clone();
         if !by_key.contains_key(&key) {
             if let Ok(chain) = entry.value().try_read() {
-                by_key.insert(key.clone(), json!({
-                    "chain_key":     key,
-                    "thought_count": chain.thoughts().len(),
-                    "agent_count":   chain.agent_registry().agents.len(),
-                    "head_hash":     chain.head_hash().map(ToString::to_string),
-                }));
+                by_key.insert(
+                    key.clone(),
+                    json!({
+                        "chain_key":     key,
+                        "thought_count": chain.thoughts().len(),
+                        "agent_count":   chain.agent_registry().agents.len(),
+                        "head_hash":     chain.head_hash().map(ToString::to_string),
+                    }),
+                );
             }
         }
     }

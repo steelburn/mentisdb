@@ -20,6 +20,10 @@ pub mod sidecar;
 /// Provider-agnostic vector and embedding helpers for deterministic ranking.
 pub mod vector;
 
+/// Real semantic embedding provider backed by the `fastembed` crate.
+#[cfg(feature = "local-embeddings")]
+pub mod fastembed_provider;
+
 pub use bundle::{
     build_context_bundles, ContextBundle, ContextBundleHit, ContextBundleOptions,
     ContextBundleResult, ContextBundleSeed,
@@ -42,4 +46,10 @@ pub use vector::{
     LocalTextEmbeddingProvider, VectorDocument, VectorIndex, VectorIndexError, VectorQuery,
     VectorSearchHit, LOCAL_TEXT_EMBEDDING_DIMENSION, LOCAL_TEXT_EMBEDDING_MODEL_ID,
     LOCAL_TEXT_EMBEDDING_VERSION,
+};
+
+#[cfg(feature = "local-embeddings")]
+pub use fastembed_provider::{
+    FastEmbedProvider, FastEmbedError, FASTEMBED_MINILM_DIMENSION, FASTEMBED_MINILM_MODEL_ID,
+    FASTEMBED_MINILM_VERSION,
 };

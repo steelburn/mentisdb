@@ -1,6 +1,6 @@
 [package]
 name = "mentisdb"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["Angel Leon <gubatron@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -15,6 +15,7 @@ categories = ["data-structures", "development-tools", "asynchronous"]
 default = ["server", "startup-sound"]
 server = ["dep:axum", "dep:env_logger", "dep:log", "dep:tokio", "mcp/server", "dep:rcgen", "dep:axum-server", "dep:rustls-pemfile", "dep:reqwest"]
 startup-sound = ["dep:rodio"]
+local-embeddings = ["dep:fastembed"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -40,6 +41,7 @@ rcgen = { version = "0.14", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 rodio = { version = "0.22", optional = true }
 tokio = { version = "1.50.0", features = ["full"], optional = true }
+fastembed = { version = "5.13.1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
