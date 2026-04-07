@@ -34,6 +34,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+# Thread-local requests.Session so each worker reuses its TCP connection
+# instead of opening a new socket per request.  Without this, the daemon
+# hits the OS "Too many open files" limit during heavy parallel ingestion.
+_tls = threading.local()
+
+def _session() -> requests.Session:
+    if not hasattr(_tls, "session"):
+        _tls.session = requests.Session()
+    return _tls.session
+
+
 DEFAULT_BASE_URL  = "http://127.0.0.1:9472"
 DEFAULT_CHAIN     = "longmemeval-bench"
 DEFAULT_TOP_K     = 5
@@ -47,7 +58,7 @@ NEAR_MISS_K       = 20  # also compute R@10 and R@20 for near-miss analysis
 # ---------------------------------------------------------------------------
 
 def _post(base_url: str, path: str, payload: dict, timeout: int = 15) -> dict:
-    r = requests.post(f"{base_url}{path}", json=payload, timeout=timeout)
+    r = _session().post(f"{base_url}{path}", json=payload, timeout=timeout)
     if not r.ok:
         raise requests.HTTPError(
             f"{r.status_code} {r.reason} — body: {r.text[:300]}",
@@ -59,7 +70,7 @@ def _post(base_url: str, path: str, payload: dict, timeout: int = 15) -> dict:
 def chain_exists(base_url: str, chain_key: str) -> bool:
     """Return True if chain_key is already known to the daemon."""
     try:
-        r = requests.get(f"{base_url}/v1/chains", timeout=5)
+        r = _session().get(f"{base_url}/v1/chains", timeout=5)
         r.raise_for_status()
         return chain_key in r.json().get("chain_keys", [])
     except Exception:
@@ -69,7 +80,7 @@ def chain_exists(base_url: str, chain_key: str) -> bool:
 def chain_thought_count(base_url: str, chain_key: str) -> int:
     """Return the number of thoughts in chain_key, or 0 on error."""
     try:
-        r = requests.get(f"{base_url}/v1/chains", timeout=5)
+        r = _session().get(f"{base_url}/v1/chains", timeout=5)
         r.raise_for_status()
         for c in r.json().get("chains", []):
             if c.get("chain_key") == chain_key:
