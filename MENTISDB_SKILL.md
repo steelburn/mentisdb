@@ -1477,6 +1477,31 @@ The fleet improves itself when agents upload updated skill files after learning 
 
 Agents with bash access to the daemon can write thoughts directly over HTTP without going through the MCP tool layer. This is useful for scripts, CI pipelines, or agents where tool overhead matters.
 
+The full field set for `POST /v1/thoughts`:
+
+```json
+{
+  "chain_key":   "my-chain",          // optional — defaults to MENTISDB_DEFAULT_CHAIN_KEY
+  "agent_id":    "my-agent",          // required
+  "agent_name":  "My Agent",          // optional display name
+  "thought_type": "LessonLearned",    // required
+  "role":        "Execution",         // optional
+  "content":     "...",               // required
+  "tags":        ["tag1"],            // optional
+  "concepts":    ["concept1"],        // optional
+  "importance":  0.9,                 // optional 0.0–1.0
+  "confidence":  0.8,                 // optional 0.0–1.0
+  "refs":        [14, 22],            // optional — positional back-refs (zero-based index)
+  "relations": [                      // optional — typed semantic edges
+    { "kind": "CausedBy",    "target_id": "<uuid>" },
+    { "kind": "ContinuesFrom", "target_id": "<uuid>", "chain_key": "other-chain" }
+  ]
+}
+```
+
+`relations[].kind` accepts: `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `RelatedTo`, `Supersedes`.  
+`relations[].chain_key` is optional — omit for intra-chain edges, set for cross-chain references.
+
 ```bash
 # Append a LessonLearned thought
 curl -s -X POST http://127.0.0.1:9472/v1/thoughts \
@@ -1488,6 +1513,17 @@ curl -s -X POST http://127.0.0.1:9472/v1/thoughts \
     "content": "DashMap Ref must never be held across .await — clone the Arc<RwLock<T>> out of the entry first or the lock will deadlock under tokio.",
     "tags": ["rust", "dashmap", "async", "axum"],
     "concepts": ["lock-safety", "async-rust"]
+  }'
+
+# Append a thought that continues from a prior thought (session chaining)
+curl -s -X POST http://127.0.0.1:9472/v1/thoughts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "planner",
+    "thought_type": "Observation",
+    "content": "The retry logic resolved the timeout — root cause was DNS.",
+    "refs": [41],
+    "relations": [{ "kind": "ContinuesFrom", "target_id": "<uuid-of-prior-turn>" }]
   }'
 
 # Search by text + thought type (POST, not GET)

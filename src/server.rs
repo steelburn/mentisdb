@@ -44,7 +44,7 @@ use crate::{
     ManagedVectorProviderKind, MentisDb, PublicKeyAlgorithm, RankedSearchGraph, RankedSearchQuery,
     SkillFormat, SkillQuery, SkillRegistry, SkillRegistryManifest, SkillStatus, SkillSummary,
     SkillUpload, SkillVersionSummary, StorageAdapterKind, Thought, ThoughtInput, ThoughtQuery,
-    ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
+    ThoughtRelation, ThoughtRelationKind, ThoughtRole, ThoughtTimeWindow, ThoughtTraversalAnchor,
     ThoughtTraversalCursor, ThoughtTraversalDirection, ThoughtTraversalRequest, ThoughtType,
     TimeWindowUnit, MENTISDB_CURRENT_VERSION,
 };
@@ -2076,6 +2076,20 @@ impl MentisDbService {
             .with_tags(request.tags.unwrap_or_default())
             .with_concepts(request.concepts.unwrap_or_default())
             .with_refs(request.refs.unwrap_or_default());
+        let mut parsed_relations: Vec<ThoughtRelation> = Vec::new();
+        for rel in request.relations.unwrap_or_default() {
+            let kind = parse_thought_relation_kind(&rel.kind)?;
+            let target_id = rel.target_id.parse::<Uuid>().map_err(|e| {
+                Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid relation target_id '{}': {}", rel.target_id, e),
+                )) as Box<dyn Error + Send + Sync>
+            })?;
+            parsed_relations.push(ThoughtRelation { kind, target_id, chain_key: None });
+        }
+        if !parsed_relations.is_empty() {
+            input = input.with_relations(parsed_relations);
+        }
         if let Some(agent_owner) = agent_owner {
             input = input.with_agent_owner(agent_owner);
         }
@@ -3593,6 +3607,13 @@ struct AppendThoughtRequest {
     tags: Option<Vec<String>>,
     concepts: Option<Vec<String>>,
     refs: Option<Vec<u64>>,
+    relations: Option<Vec<RelationInput>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationInput {
+    kind: String,
+    target_id: String, // UUID string
 }
 
 #[derive(Debug, Deserialize)]
@@ -5674,6 +5695,26 @@ fn parse_storage_adapter_kind(
     input
         .parse::<StorageAdapterKind>()
         .map_err(|error| error.into())
+}
+
+fn parse_thought_relation_kind(
+    input: &str,
+) -> Result<ThoughtRelationKind, Box<dyn Error + Send + Sync>> {
+    let kind = match normalize_label(input).as_str() {
+        "references"    => ThoughtRelationKind::References,
+        "summarizes"    => ThoughtRelationKind::Summarizes,
+        "corrects"      => ThoughtRelationKind::Corrects,
+        "invalidates"   => ThoughtRelationKind::Invalidates,
+        "causedby"      => ThoughtRelationKind::CausedBy,
+        "supports"      => ThoughtRelationKind::Supports,
+        "contradicts"   => ThoughtRelationKind::Contradicts,
+        "derivedfrom"   => ThoughtRelationKind::DerivedFrom,
+        "continuesfrom" => ThoughtRelationKind::ContinuesFrom,
+        "relatedto"     => ThoughtRelationKind::RelatedTo,
+        "supersedes"    => ThoughtRelationKind::Supersedes,
+        _ => return Err(format!("Unknown ThoughtRelationKind '{input}'").into()),
+    };
+    Ok(kind)
 }
 
 fn parse_agent_status(input: &str) -> Result<AgentStatus, Box<dyn Error + Send + Sync>> {

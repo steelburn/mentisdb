@@ -406,6 +406,32 @@ REST endpoints:
 - `POST /v1/skills/revoke`
 - `POST /v1/head`
 
+### Append Thought — `POST /v1/thoughts`
+
+```json
+{
+  "chain_key":    "my-chain",
+  "agent_id":     "my-agent",
+  "agent_name":   "My Agent",
+  "thought_type": "LessonLearned",
+  "role":         "Execution",
+  "content":      "...",
+  "tags":         ["tag1"],
+  "concepts":     ["concept1"],
+  "importance":   0.9,
+  "confidence":   0.8,
+  "refs":         [14, 22],
+  "relations": [
+    { "kind": "CausedBy",      "target_id": "<uuid>" },
+    { "kind": "ContinuesFrom", "target_id": "<uuid>", "chain_key": "other-chain" }
+  ]
+}
+```
+
+`chain_key`, `role`, `tags`, `concepts`, `importance`, `confidence`, `refs`, and `relations` are optional.  
+`relations[].kind` accepts: `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `RelatedTo`, `Supersedes`.  
+`relations[].chain_key` is optional — omit for intra-chain edges, set for cross-chain references.
+
 ---
 
 ## Search Semantics

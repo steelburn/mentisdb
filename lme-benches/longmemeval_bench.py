@@ -91,22 +91,25 @@ def chain_thought_count(base_url: str, chain_key: str) -> int:
 
 
 def append_turn(base_url: str, chain_key: str, content: str, role: str,
-                session_id: str, retries: int = 3) -> None:
+                session_id: str, retries: int = 3, prev_id: str = None) -> str:
     # User turns get higher importance: preferences, facts, and personal statements
     # are always from the user role. Assistant turns tend to be verbose and dominate
     # BM25 scoring; downweighting them improves retrieval of user-originated evidence.
     importance = 0.8 if role == "user" else 0.2
+    payload = {
+        "chain_key": chain_key,
+        "thought_type": "FactLearned",
+        "content": content,
+        "agent_id": role,
+        "importance": importance,
+        "tags": [f"session:{session_id}", f"role:{role}"],
+    }
+    if prev_id:
+        payload["relations"] = [{"kind": "ContinuesFrom", "target_id": prev_id}]
     for attempt in range(retries):
         try:
-            _post(base_url, "/v1/thoughts", {
-                "chain_key": chain_key,
-                "thought_type": "FactLearned",
-                "content": content,
-                "agent_id": role,
-                "importance": importance,
-                "tags": [f"session:{session_id}", f"role:{role}"],
-            })
-            return
+            resp = _post(base_url, "/v1/thoughts", payload)
+            return resp["thought"]["id"]   # UUID string
         except Exception:
             if attempt == retries - 1:
                 raise
@@ -169,39 +172,51 @@ def _collect_evidence(instance: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def ingest(base_url: str, chain_key: str, instances: list[dict], workers: int) -> int:
-    """Ingest all unique session turns. Returns total turns ingested."""
+    """Ingest all unique session turns, chaining turns within a session via ContinuesFrom.
+
+    Turns within each session are processed sequentially so each turn can reference
+    the previous one. Sessions themselves are processed in parallel (workers = parallel sessions).
+    Returns total turns ingested.
+    """
+    # Build per-session turn lists, deduplicated by session ID
     seen: set[str] = set()
-    tasks: list[tuple[str, str, str]] = []
+    sessions: dict[str, list[tuple[str, str]]] = {}
 
     for inst in instances:
         for session, sid in zip(inst["haystack_sessions"], inst["haystack_session_ids"]):
             if sid in seen:
                 continue
             seen.add(sid)
-            for turn in session:
-                tasks.append((turn.get("content", ""), turn.get("role", "unknown"), sid))
+            turns = [(t.get("content", ""), t.get("role", "unknown")) for t in session]
+            sessions[sid] = turns
 
-    total = len(tasks)
-    print(f"  Ingesting {total} turns from {len(seen)} sessions …", flush=True)
+    total_turns = sum(len(v) for v in sessions.values())
+    print(f"  Ingesting {total_turns} turns from {len(sessions)} sessions …", flush=True)
     t0 = time.monotonic()
 
-    def _ingest_one(args):
-        content, role, sid = args
-        append_turn(base_url, chain_key, content, role, sid)
+    done_count = [0]
+    lock = threading.Lock()
+
+    def _ingest_session(sid: str) -> None:
+        turns = sessions[sid]
+        prev_id = None
+        for content, role in turns:
+            prev_id = append_turn(base_url, chain_key, content, role, sid, prev_id=prev_id)
+            with lock:
+                done_count[0] += 1
+                d = done_count[0]
+                if d % 200 == 0 or d == total_turns:
+                    elapsed = time.monotonic() - t0
+                    rate = d / elapsed if elapsed > 0 else 0
+                    eta = (total_turns - d) / rate if rate > 0 else 0
+                    print(f"    {d}/{total_turns} turns  ({rate:.0f}/s  ETA {eta:.0f}s)", flush=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_ingest_one, t): i for i, t in enumerate(tasks)}
-        done = 0
+        futs = [pool.submit(_ingest_session, sid) for sid in sessions]
         for f in as_completed(futs):
             f.result()
-            done += 1
-            if done % 200 == 0 or done == total:
-                elapsed = time.monotonic() - t0
-                rate = done / elapsed if elapsed > 0 else 0
-                eta = (total - done) / rate if rate > 0 else 0
-                print(f"    {done}/{total} turns  ({rate:.0f}/s  ETA {eta:.0f}s)", flush=True)
 
-    return total
+    return total_turns
 
 
 # ---------------------------------------------------------------------------
