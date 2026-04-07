@@ -48,6 +48,32 @@ use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::{mpsc, oneshot};
 
+/// Raise the open-file-descriptor limit to the OS hard cap (up to 65 535).
+///
+/// The macOS default soft limit is 256, which is easily exhausted when the
+/// daemon handles thousands of concurrent ingestion requests (each TCP
+/// connection consumes one file descriptor). This is a no-op on Windows.
+#[cfg(unix)]
+fn raise_fd_limit() {
+    unsafe {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) != 0 {
+            return;
+        }
+        let target = rlim.rlim_max.min(65_535);
+        if rlim.rlim_cur < target {
+            rlim.rlim_cur = target;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &rlim);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 const MENTIS_BANNER: &str = r#"███╗   ███╗███████╗███╗   ██╗████████╗██╗███████╗
 ████╗ ████║██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝
 ██╔████╔██║█████╗  ██╔██╗ ██║   ██║   ██║███████╗
@@ -858,6 +884,7 @@ Run `cargo install --git https://github.com/{} --tag {} --locked --force --bin {
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    raise_fd_limit();
     init_logger();
     let storage_root_migration = if std::env::var_os("MENTISDB_DIR").is_none() {
         adopt_legacy_default_mentisdb_dir()?

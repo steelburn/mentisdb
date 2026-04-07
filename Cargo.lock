@@ -1629,6 +1629,7 @@ dependencies = [
  "diffy",
  "ed25519-dalek",
  "env_logger",
+ "libc",
  "log",
  "rcgen",
  "reqwest 0.13.2",
