@@ -843,23 +843,46 @@ async fn api_chains(
         chain_keys.insert(entry.key().clone());
     }
 
-    let mut chains = Vec::with_capacity(chain_keys.len());
+    // Open all chains in parallel — sequential opens stall the response when a
+    // large chain (e.g. 10k+ thoughts) has to be read from cold disk, causing
+    // the browser to time out before the full list is returned.
+    let futs: Vec<_> = chain_keys
+        .iter()
+        .map(|key| {
+            let state = state.clone();
+            let key = key.clone();
+            async move {
+                match get_or_open_chain(&state, &key).await {
+                    Ok(arc) => {
+                        let chain = arc.read().await;
+                        Some(json!({
+                            "chain_key":     key,
+                            "thought_count": chain.thoughts().len(),
+                            "agent_count":   chain.agent_registry().agents.len(),
+                            "head_hash":     chain.head_hash().map(ToString::to_string),
+                        }))
+                    }
+                    // Chain file missing/corrupt — omit silently rather than
+                    // aborting the entire list.
+                    Err(_) => None,
+                }
+            }
+        })
+        .collect();
 
-    for chain_key in &chain_keys {
-        // Open (or retrieve from cache) to guarantee live counts.
-        let arc = match get_or_open_chain(&state, chain_key).await {
-            Ok(arc) => arc,
-            Err((StatusCode::NOT_FOUND, _)) => continue,
-            Err(err) => return Err(err),
-        };
-        let chain = arc.read().await;
-        chains.push(json!({
-            "chain_key": chain_key,
-            "thought_count": chain.thoughts().len(),
-            "agent_count":   chain.agent_registry().agents.len(),
-            "head_hash":     chain.head_hash().map(ToString::to_string),
-        }));
-    }
+    let mut chains: Vec<Value> = futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // Restore alphabetical order (join_all preserves input order which is
+    // already sorted by BTreeSet, but be explicit).
+    chains.sort_by(|a, b| {
+        a["chain_key"]
+            .as_str()
+            .cmp(&b["chain_key"].as_str())
+    });
 
     Ok(Json(json!(chains)))
 }
