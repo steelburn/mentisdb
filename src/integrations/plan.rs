@@ -166,8 +166,7 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\"\n    }}\n  }}\n}}"
         )),
         IntegrationKind::ClaudeDesktop => Some(format!(
-            "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"command\": \"{}\",\n      \"args\": [\"{url}\"],\n      \"env\": {{ \"NODE_TLS_REJECT_UNAUTHORIZED\": \"0\" }}\n    }}\n  }}\n}}\n// Requires the mcp-remote bridge.",
-            claude_desktop_bridge_command(platform)
+            "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"command\": \"node\",\n      \"args\": [\"mcp-remote\", \"{url}\"],\n      \"env\": {{ \"NODE_TLS_REJECT_UNAUTHORIZED\": \"0\" }}\n    }}\n  }}\n}}\n// Requires Node.js >= 20 and the mcp-remote npm package."
         )),
         IntegrationKind::GeminiCli => Some(format!(
             "{{\n  \"mcpServers\": {{\n    \"mentisdb\": {{\n      \"type\": \"http\",\n      \"url\": \"{url}\",\n      \"httpUrl\": \"{url}\"\n    }}\n  }}\n}}"
@@ -188,6 +187,10 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         IntegrationKind::ClaudeDesktop => {
             notes.push(
                 "Claude Desktop requires an HTTPS MCP endpoint and the mcp-remote bridge."
+                    .to_string(),
+            );
+            notes.push(
+                "mcp-remote requires Node.js >= 20. The setup command writes the absolute path to the node binary to avoid shebang resolution picking an older version."
                     .to_string(),
             );
             if url.starts_with("https://") {
@@ -239,14 +242,6 @@ fn plan_from_detection(detection: IntegrationDetection, url: String) -> SetupPla
         suggested_command,
         snippet,
         notes,
-    }
-}
-
-fn claude_desktop_bridge_command(platform: HostPlatform) -> &'static str {
-    match platform {
-        HostPlatform::Macos => "/opt/homebrew/bin/mcp-remote",
-        HostPlatform::Linux | HostPlatform::Other => "/usr/local/bin/mcp-remote",
-        HostPlatform::Windows => "mcp-remote",
     }
 }
 
