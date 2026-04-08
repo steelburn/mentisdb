@@ -2762,6 +2762,11 @@ trait ManagedEmbeddingProvider: Send + Sync {
     ) -> io::Result<Vec<crate::search::VectorDocument>>;
 }
 
+struct ManagedSidecarEntry {
+    provider: Box<dyn ManagedEmbeddingProvider>,
+    auto_sync: bool,
+}
+
 struct RegisteredEmbeddingProvider<P> {
     provider: P,
 }
@@ -2963,7 +2968,7 @@ pub struct MentisDb {
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
     managed_vector_sidecars:
-        HashMap<crate::search::EmbeddingMetadata, Box<dyn ManagedEmbeddingProvider>>,
+        HashMap<crate::search::EmbeddingMetadata, ManagedSidecarEntry>,
     pending_agent_registry_sync: bool,
     pending_agent_registry_updates: usize,
     pending_chain_registration_sync: bool,
@@ -4237,9 +4242,30 @@ impl MentisDb {
         };
         self.managed_vector_sidecars.insert(
             provider.metadata().clone(),
-            Box::new(RegisteredEmbeddingProvider { provider }),
+            ManagedSidecarEntry {
+                provider: Box::new(RegisteredEmbeddingProvider { provider }),
+                auto_sync: true,
+            },
         );
         Ok(sidecar)
+    }
+
+    /// Register a provider for search scoring only — no sidecar rebuild, no append-time sync.
+    ///
+    /// Use this when a sidecar file may already exist on disk and you want it to
+    /// participate in ranked-search rescoring without paying per-append ONNX cost.
+    #[cfg(feature = "local-embeddings")]
+    fn register_vector_sidecar_for_search<P: crate::search::EmbeddingProvider + Send + Sync + 'static>(
+        &mut self,
+        provider: P,
+    ) {
+        self.managed_vector_sidecars.insert(
+            provider.metadata().clone(),
+            ManagedSidecarEntry {
+                provider: Box::new(RegisteredEmbeddingProvider { provider }),
+                auto_sync: false,
+            },
+        );
     }
 
     /// Stop append-time synchronization for one managed vector sidecar.
@@ -4275,14 +4301,13 @@ impl MentisDb {
             );
             match crate::search::FastEmbedProvider::try_new() {
                 Ok(p) => {
-                    self.manage_vector_sidecar(p)
-                        .map_err(|e| io::Error::other(format!("fastembed sidecar: {e}")))?;
+                    self.register_vector_sidecar_for_search(p);
                 }
                 Err(e) => {
                     log::warn!("FastEmbed provider init failed, skipping: {e}");
                 }
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(feature = "local-embeddings"))]
@@ -4397,8 +4422,13 @@ impl MentisDb {
                 self.rebuild_vector_sidecar(&provider)
                     .map_err(vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>)?;
                 if enabled {
-                    self.managed_vector_sidecars
-                        .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
+                    self.managed_vector_sidecars.insert(
+                        metadata,
+                        ManagedSidecarEntry {
+                            provider: Box::new(RegisteredEmbeddingProvider { provider }),
+                            auto_sync: true,
+                        },
+                    );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
                 }
@@ -4411,8 +4441,13 @@ impl MentisDb {
                 self.rebuild_vector_sidecar(&provider)
                     .map_err(|e| io::Error::other(format!("fastembed sidecar rebuild: {e}")))?;
                 if enabled {
-                    self.managed_vector_sidecars
-                        .insert(metadata, Box::new(RegisteredEmbeddingProvider { provider }));
+                    self.managed_vector_sidecars.insert(
+                        metadata,
+                        ManagedSidecarEntry {
+                            provider: Box::new(RegisteredEmbeddingProvider { provider }),
+                            auto_sync: true,
+                        },
+                    );
                 } else {
                     self.unmanage_vector_sidecar(&metadata);
                 }
@@ -4550,8 +4585,11 @@ impl MentisDb {
             Some(thought.prev_hash.as_str())
         };
 
-        for provider in self.managed_vector_sidecars.values() {
-            let metadata = provider.metadata().clone();
+        for entry in self.managed_vector_sidecars.values() {
+            if !entry.auto_sync {
+                continue;
+            }
+            let metadata = entry.provider.metadata().clone();
             let path = chain_vector_sidecar_path(
                 &persistence.chain_dir,
                 &persistence.chain_key,
@@ -4570,9 +4608,9 @@ impl MentisDb {
                         crate::search::VectorSidecarFreshness::Fresh
                     ) =>
                 {
-                    self.extend_fresh_vector_sidecar(provider.as_ref(), sidecar, thought)?
+                    self.extend_fresh_vector_sidecar(entry.provider.as_ref(), sidecar, thought)?
                 }
-                Ok(_) | Err(_) => self.rebuild_managed_vector_sidecar(provider.as_ref())?,
+                Ok(_) | Err(_) => self.rebuild_managed_vector_sidecar(entry.provider.as_ref())?,
             };
             sidecar.save_to_path(&path)?;
         }
@@ -4811,8 +4849,24 @@ impl MentisDb {
         let importance = thought.importance * 0.2;
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
         let recency = self.recency_score(thought);
-        let total =
-            lexical + vector + graph + relation + seed_support + importance + confidence + recency;
+        // Vector-lexical fusion: when a thought has no lexical signal at all,
+        // vector gets a large boost so semantically-matched thoughts surface.
+        // When lexical is present but weak (< RAMP_FLOOR), a partial boost
+        // helps thoughts that are semantically close but lack exact term overlap.
+        // Above RAMP_FLOOR, vector is additive only — never overrides lexical.
+        const VECTOR_ONLY_BOOST: f32 = 60.0;
+        const VECTOR_WEAK_LEXICAL_BOOST: f32 = 20.0;
+        const LEXICAL_RAMP_FLOOR: f32 = 1.0;
+        let vector_contribution = if lexical == 0.0 && vector > 0.0 {
+            vector * VECTOR_ONLY_BOOST
+        } else if lexical > 0.0 && lexical < LEXICAL_RAMP_FLOOR && vector > 0.0 {
+            let fraction = 1.0 - (lexical / LEXICAL_RAMP_FLOOR);
+            vector * (1.0 + VECTOR_WEAK_LEXICAL_BOOST * fraction)
+        } else {
+            vector
+        };
+        let total = lexical + vector_contribution
+            + graph + relation + seed_support + importance + confidence + recency;
 
         Some(RankedSearchHit {
             thought,
@@ -4863,7 +4917,7 @@ impl MentisDb {
     ) -> HashMap<usize, f32> {
         const FRESH_VECTOR_WEIGHT: f32 = 0.35;
         const STALE_VECTOR_WEIGHT: f32 = 0.2;
-        const MIN_VECTOR_COSINE: f32 = 0.12;
+        const MIN_VECTOR_COSINE: f32 = 0.06;
         const MAX_VECTOR_HITS: usize = 256;
 
         if candidates.is_empty() || self.managed_vector_sidecars.is_empty() {
@@ -4876,8 +4930,8 @@ impl MentisDb {
             .collect();
         let mut scores = HashMap::new();
 
-        for provider in self.managed_vector_sidecars.values() {
-            let metadata = provider.metadata().clone();
+        for entry in self.managed_vector_sidecars.values() {
+            let metadata = entry.provider.metadata().clone();
             let sidecar = match self.load_vector_sidecar(&metadata) {
                 Ok(Some(sidecar)) => sidecar,
                 Ok(None) | Err(_) => continue,
@@ -4891,7 +4945,7 @@ impl MentisDb {
                 Ok(_) | Err(_) => continue,
             };
 
-            let mut query_documents = match provider
+            let mut query_documents = match entry.provider
                 .embed_documents(&[crate::search::EmbeddingInput::new("__query__", text)])
             {
                 Ok(documents) => documents,
