@@ -1,3 +1,24 @@
+0.8.0.27 APR/08/2026
+ - fix(integrations): Claude Desktop mcp-remote bridge uses explicit node path
+   as command to bypass shebang resolution picking an older Node.js version
+   (mcp-remote requires Node >= 20; its undici dependency uses the File global
+   added in Node 20, causing ReferenceError: File is not defined on Node 18)
+ - fix(integrations): BridgeCommand struct carries both node_path and
+   mcp_remote_path; detect_node_path() prefers the same directory as
+   mcp-remote first (handles nvm-managed installs)
+ - fix(cli): ensure_prerequisites() now validates Node >= 20 before
+   installing or accepting mcp-remote; clear error messages guide users to
+   upgrade via nvm/fnm
+ - fix(integrations): remove hardcoded platform-specific mcp-remote paths
+   from plan.rs; setup plan snippet and notes updated for node+mcp-remote
+   pattern with Node >= 20 requirement
+ - docs(README): rewrite Claude Desktop setup section with node+mcp-remote
+   config pattern, Node >= 20 requirement, nvm/Homebrew examples, and
+   shebang-issue explanation; recommend mentisdbd setup claude-desktop as
+   primary setup path
+ - test: update Claude Desktop apply test for node+mcp-remote bridge
+   pattern; add parse_node_major and snippet Node-requirement tests
+
 0.8.0.26 APR/08/2026
  - security(skills): SkillReadOutput wrapper — SkillRegistry::read_skill() now returns
    SkillReadOutput { content, warnings, status } instead of a plain String, so callers
