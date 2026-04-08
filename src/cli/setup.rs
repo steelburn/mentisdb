@@ -11,6 +11,9 @@ use super::args::default_url;
 use super::prompt::boxed_apply_summary;
 use super::SetupCommand;
 
+/// Minimum Node.js major version required by mcp-remote.
+const MCP_REMOTE_MIN_NODE_MAJOR: u32 = 20;
+
 pub(super) fn run_setup(
     command: &SetupCommand,
     input: &mut dyn BufRead,
@@ -122,8 +125,29 @@ pub(super) fn ensure_prerequisites(
     if integration != IntegrationKind::ClaudeDesktop {
         return Ok(());
     }
+
     if command_on_path(&["mcp-remote", "mcp-remote.cmd"]).is_some() {
-        return Ok(());
+        if let Some(node) = command_on_path(&["node", "node.exe"]) {
+            match node_major_version(&node) {
+                Ok(major) if major >= MCP_REMOTE_MIN_NODE_MAJOR => return Ok(()),
+                Ok(major) => {
+                    return Err(io::Error::other(format!(
+                        "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. Install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} or switch via nvm/fnm.",
+                        node.display()
+                    )));
+                }
+                Err(e) => {
+                    return Err(io::Error::other(format!(
+                        "Could not determine Node.js version from {}: {e}",
+                        node.display()
+                    )));
+                }
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH."),
+        ));
     }
 
     let Some(npm) = command_on_path(&["npm", "npm.cmd"]) else {
@@ -132,6 +156,29 @@ pub(super) fn ensure_prerequisites(
             "Claude Desktop integration requires npm so MentisDB can install mcp-remote.",
         ));
     };
+
+    let Some(node) = command_on_path(&["node", "node.exe"]) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but `node` was not found on PATH."),
+        ));
+    };
+
+    match node_major_version(&node) {
+        Ok(major) if major < MCP_REMOTE_MIN_NODE_MAJOR => {
+            return Err(io::Error::other(format!(
+                "Claude Desktop requires Node.js >= {MCP_REMOTE_MIN_NODE_MAJOR} for mcp-remote, but {} is Node {major}. Install Node >= {MCP_REMOTE_MIN_NODE_MAJOR} or switch via nvm/fnm.",
+                node.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(io::Error::other(format!(
+                "Could not determine Node.js version from {}: {e}",
+                node.display()
+            )));
+        }
+    }
 
     writeln!(
         out,
@@ -147,6 +194,32 @@ pub(super) fn ensure_prerequisites(
         )));
     }
     Ok(())
+}
+
+fn node_major_version(node: &PathBuf) -> io::Result<u32> {
+    let output = Command::new(node).arg("--version").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "node --version exited with status {}",
+            output.status
+        )));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_node_major(&version)
+}
+
+/// Parse the major version number from a Node.js version string like `v22.18.0`.
+pub fn parse_node_major(version: &str) -> io::Result<u32> {
+    let version = version.trim_start_matches('v');
+    let major_str = version
+        .split('.')
+        .next()
+        .ok_or_else(|| io::Error::other(format!("unexpected node version format: {version}")))?;
+    major_str.parse::<u32>().map_err(|e| {
+        io::Error::other(format!(
+            "could not parse node major version from {version}: {e}"
+        ))
+    })
 }
 
 fn command_on_path(candidates: &[&str]) -> Option<PathBuf> {
