@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>How MentisDB Performs on LongMemEval</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="-" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 8, 2026</div>
+<header id="title-block-header">
+<h1 class="title">How MentisDB Performs on LongMemEval</h1>
+</header>
+<h1 id="how-mentisdb-performs-on-longmemeval-and-why-it-matters">How
+MentisDB Performs on LongMemEval — And Why It Matters</h1>
+<h2 id="what-is-longmemeval">What is LongMemEval?</h2>
+<p>If you’re building AI agents that remember things across
+conversations, you need a way to measure whether your memory system
+actually works. <strong>LongMemEval</strong> is the benchmark for
+that.</p>
+<p>Created by researchers at NVIDIA, it tests a simple question:
+<em>when an AI agent has seen 10,000+ conversation turns across hundreds
+of chat sessions, can it find the right memory when asked?</em></p>
+<p>The benchmark contains 500 questions across 940 chat sessions (10,866
+conversation turns). Each question has a known “evidence” — a specific
+thing the user said earlier that answers the question. The test measures
+whether your memory system can surface that evidence in its top
+results.</p>
+<h2 id="what-does-r5-mean">What does R@5 mean?</h2>
+<p>The primary metric is <strong>Recall@5</strong> (R@5): did the
+correct evidence appear in the top 5 results? If your memory system
+returns 5 memories and one of them is the right one, that’s a hit.</p>
+<p>Why top 5? Because in practice, an AI agent has limited context
+window space. It can’t read 100 memories — it needs the right one in the
+first few results.</p>
+<p>The benchmark also measures R@10 and R@20 to show how close you are
+even when you miss — if the evidence is at position 8, that’s a “near
+miss” that could be fixed with better ranking, as opposed to a true gap
+where the evidence wasn’t found at all.</p>
+<h2 id="the-six-question-types">The Six Question Types</h2>
+<p>LongMemEval isn’t one test — it’s six different kinds of memory
+challenges:</p>
+<ul>
+<li><strong>Single-session-user</strong>: “What did I tell you about my
+car?” — facts the user stated in one conversation</li>
+<li><strong>Single-session-assistant</strong>: “What advice did you give
+me about resumes?” — things the assistant said</li>
+<li><strong>Single-session-preference</strong>: “What kind of food do I
+prefer?” — user preferences and tastes</li>
+<li><strong>Multi-session</strong>: “How many projects am I leading?” —
+information spread across multiple conversations</li>
+<li><strong>Knowledge-update</strong>: “What’s my new address?” — facts
+that changed over time</li>
+<li><strong>Temporal-reasoning</strong>: “Which did I buy first, the
+bike or the car?” — understanding the order of events</li>
+</ul>
+<p>Each type tests a different aspect of memory retrieval, and they’re
+not equally hard.</p>
+<h2 id="how-mentisdb-did">How MentisDB Did</h2>
+<p>We ran LongMemEval against MentisDB 0.8.0 with three retrieval
+signals working together:</p>
+<ol type="1">
+<li><strong>Lexical search</strong> (BM25 with Porter stemming) — finds
+exact word matches</li>
+<li><strong>Semantic search</strong> (FastEmbed all-MiniLM-L6-v2) —
+finds meaning matches even when words differ</li>
+<li><strong>Graph expansion</strong> — follows links between related
+memories</li>
+</ol>
+<h3 id="the-numbers">The Numbers</h3>
+<table>
+<thead>
+<tr>
+<th>Question Type</th>
+<th>R@5</th>
+<th>R@10</th>
+<th>R@20</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Overall</strong></td>
+<td><strong>65.0%</strong></td>
+<td><strong>72.2%</strong></td>
+<td><strong>79.0%</strong></td>
+</tr>
+<tr>
+<td>Knowledge Update</td>
+<td>82.1%</td>
+<td>84.6%</td>
+<td>88.5%</td>
+</tr>
+<tr>
+<td>Single-Session-Assistant</td>
+<td>83.9%</td>
+<td>85.7%</td>
+<td>91.1%</td>
+</tr>
+<tr>
+<td>Single-Session-User</td>
+<td>70.0%</td>
+<td>72.9%</td>
+<td>80.0%</td>
+</tr>
+<tr>
+<td>Temporal Reasoning</td>
+<td>61.7%</td>
+<td>68.4%</td>
+<td>73.7%</td>
+</tr>
+<tr>
+<td>Multi-Session</td>
+<td>59.4%</td>
+<td>69.2%</td>
+<td>76.7%</td>
+</tr>
+<tr>
+<td>Single-Session-Preference</td>
+<td>13.3%</td>
+<td>16.7%</td>
+<td>23.3%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-were-good-at">What we’re good at</h3>
+<p><strong>Knowledge updates (82.1%)</strong> and <strong>assistant
+recall (83.9%)</strong> are our strongest categories. When a user
+explicitly states a fact or the assistant gives advice, the word overlap
+between query and evidence is strong enough for BM25 to find it
+reliably. Porter stemming helped a lot here — “updated” now matches
+“updates”, “running” matches “ran”, etc.</p>
+<p><strong>User facts (70.0%)</strong> and <strong>temporal reasoning
+(61.7%)</strong> showed the biggest improvements from our search
+improvements. These categories benefit from two things: stemming (which
+catches word variants) and the importance-weighted scoring (which boosts
+user-originated content over verbose assistant responses).</p>
+<h3 id="where-we-struggle">Where we struggle</h3>
+<p><strong>Single-session-preference (13.3%)</strong> is our weakest
+category by far, and it reveals a fundamental limitation of our current
+approach.</p>
+<p>The problem: preference questions ask things like “What kind of food
+do I like?” but the evidence is something like “I’ve been really into
+Thai cuisine lately — do you know any good pad thai recipes?” There’s
+almost no word overlap between the query and the evidence. BM25 can’t
+bridge that gap because “food” ≠ “Thai cuisine” and “like” ≠ “into”.</p>
+<p>Our semantic embeddings (384-dimension MiniLM) are supposed to handle
+this, but they’re not strong enough to reliably rank these semantic
+matches above all the other conversation turns that mention food-related
+words. At R@20, preference only reaches 23.3% — meaning 77% of the time,
+the evidence isn’t even in the top 20 results.</p>
+<p>This is a known limitation for embedding-based retrieval on short,
+implicit-evidence queries. Better embeddings (larger models, fine-tuned
+models) or a reranking step would help, but that’s a future
+improvement.</p>
+<p><strong>Multi-session (59.4%)</strong> is our second-weakest
+category. These questions require finding information that was mentioned
+across different conversations, sometimes days apart. Graph expansion
+helps a bit (following links between related thoughts), but the core
+challenge is that the evidence might be a single sentence buried in a
+30-turn conversation about something else entirely.</p>
+<h2 id="the-journey-57.2-65.0">The Journey: 57.2% → 65.0%</h2>
+<p>We didn’t start at 65%. Our first run scored 57.2% R@5 with plain
+BM25 + vector search. Here’s what we changed and what happened:</p>
+<h3 id="porter-stemming-4.4">1. Porter Stemming (+4.4%)</h3>
+<p>The biggest single improvement came from adding Porter stemming to
+our lexical tokenizer. Instead of indexing “preferences” and querying
+“prefer”, both now normalize to “prefer” and match. This bumped overall
+R@5 from 57.2% to 61.6% — a 4.4 percentage point gain from one
+change.</p>
+<p>The gains were biggest for temporal reasoning (+9.0%) and user facts
+(+8.5%), where questions often use different word forms than the
+original evidence.</p>
+<h3 id="better-vector-lexical-fusion-3.4">2. Better Vector-Lexical
+Fusion (+3.4%)</h3>
+<p>Our original scoring just added lexical and vector scores together.
+The problem: vector scores (0.0–0.35 range) were drowned out by BM25
+scores (0–30+ range). Semantically-relevant thoughts with zero word
+overlap never surfaced.</p>
+<p>We replaced this with a <strong>tiered boost</strong>: when a thought
+has no lexical match at all, its vector score gets a 60× boost so it can
+compete with BM25 hits. When there’s a weak lexical match, it gets a
+partial 20× boost. When BM25 is strong, vector contributes as a small
+additive signal without disrupting the ranking.</p>
+<p>This took us from 61.6% to 65.0% — another 3.4 point gain.</p>
+<h3 id="what-didnt-work-reciprocal-rank-fusion-rrf">What didn’t work:
+Reciprocal Rank Fusion (RRF)</h3>
+<p>Before the tiered boost, we tried RRF — the standard approach in
+hybrid search. It fused BM25 and vector rankings by assigning
+<code>1/(K+rank)</code> scores from each list.</p>
+<p>RRF actually <em>hurt</em> our results. It demoted strong BM25 hits
+for temporal and factual questions because vector matches (often wrong
+ones) got equal weight in the fusion. For questions where BM25 already
+finds the answer, re-ranking by vector similarity makes things worse,
+not better.</p>
+<p>The lesson: for memory retrieval where BM25 is strong, don’t re-rank
+what’s already working. Only use vector to promote candidates that BM25
+can’t find at all.</p>
+<h2 id="how-we-compare">How We Compare</h2>
+<p>LongMemEval is becoming a standard retrieval benchmark, and several
+systems have published results. Here’s how MentisDB stacks up:</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+</colgroup>
+<thead>
+<tr>
+<th>System</th>
+<th>Benchmark</th>
+<th>Metric</th>
+<th>Score</th>
+<th>Storage</th>
+<th>Embeddings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MentisDB</strong></td>
+<td>LongMemEval (500 q, 10.8k turns)</td>
+<td>R@5</td>
+<td><strong>65.0%</strong></td>
+<td>Turn-level</td>
+<td>MiniLM 384d (local)</td>
+</tr>
+<tr>
+<td><strong>MemX</strong></td>
+<td>LongMemEval (500 q, 220k facts)</td>
+<td>Hit@5</td>
+<td>51.6%</td>
+<td>Fact-level (LLM-extracted)</td>
+<td>Qwen3-0.6B 1024d</td>
+</tr>
+<tr>
+<td><strong>MemX</strong></td>
+<td>LongMemEval (500 q, 100k rounds)</td>
+<td>Hit@5</td>
+<td>27.0%</td>
+<td>Round-level</td>
+<td>Qwen3-0.6B 1024d</td>
+</tr>
+<tr>
+<td><strong>MemX</strong></td>
+<td>LongMemEval (500 q, 19k sessions)</td>
+<td>Hit@5</td>
+<td>24.6%</td>
+<td>Session-level</td>
+<td>Qwen3-0.6B 1024d</td>
+</tr>
+<tr>
+<td><strong>Mem0</strong></td>
+<td>LOCOMO (different benchmark)</td>
+<td>LLM-Judge</td>
+<td>66.9%</td>
+<td>LLM-extracted facts</td>
+<td>Cloud API</td>
+</tr>
+<tr>
+<td><strong>Mem0ᵍ</strong></td>
+<td>LOCOMO (different benchmark)</td>
+<td>LLM-Judge</td>
+<td>68.4%</td>
+<td>LLM-extracted + graph</td>
+<td>Cloud API</td>
+</tr>
+<tr>
+<td><strong>OpenAI Memory</strong></td>
+<td>LOCOMO (different benchmark)</td>
+<td>LLM-Judge</td>
+<td>52.9%</td>
+<td>Proprietary</td>
+<td>Proprietary</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mentisdb-vs-memx">MentisDB vs MemX</h3>
+<p>MemX is the closest comparison — also Rust, also local-first, also
+hybrid retrieval with RRF. At fact-level granularity (220k records, each
+an LLM-extracted atomic fact), MemX achieves 51.6% Hit@5. MentisDB
+achieves 65.0% R@5 with simpler turn-level storage (10.8k records, no
+LLM fact extraction).</p>
+<p>Why does MentisDB outperform MemX despite simpler storage and smaller
+embeddings? Two reasons:</p>
+<ol type="1">
+<li><p><strong>Tiered fusion beats RRF.</strong> MemX uses standard
+Reciprocal Rank Fusion to combine vector and keyword results. We tried
+RRF and it hurt — it demoted strong BM25 hits by giving vector matches
+equal weight. Our tiered boost approach (60× when no lexical match, 20×
+ramp for weak matches, additive otherwise) preserves BM25’s strengths
+while still surfacing semantic-only hits.</p></li>
+<li><p><strong>Importance-weighted scoring.</strong> MemX’s four-factor
+reranker weights importance at 10%. We found that user-originated
+content needs a much stronger signal to compete with verbose assistant
+responses — our 3.0× importance multiplier gives user thoughts +2.4 vs
+assistant +0.6, which tips close BM25 races.</p></li>
+</ol>
+<h3 id="mentisdb-vs-mem0">MentisDB vs Mem0</h3>
+<p>Mem0 isn’t directly comparable — they benchmark on LOCOMO (a
+different dataset) and measure end-to-end answer quality with an LLM
+judge, not raw retrieval recall. Mem0 also uses cloud LLMs for fact
+extraction and graph construction, which gives them better multi-session
+reasoning at higher cost and complexity.</p>
+<p>The fair comparison is on the retrieval layer: both systems store
+compressed memory representations and retrieve them for an LLM to reason
+over. MentisDB is fully local with no cloud dependencies; Mem0 requires
+cloud APIs for its extraction pipeline.</p>
+<h3 id="the-granularity-trade-off">The granularity trade-off</h3>
+<p>MemX’s most striking finding is that storage granularity matters more
+than any pipeline tweak — fact-level storage doubles Hit@5 vs
+session-level. This suggests a clear improvement path for MentisDB:
+adding optional LLM-based fact extraction could significantly boost
+recall, especially for multi-session and preference queries where the
+evidence is buried in long conversations.</p>
+<h2 id="why-this-matters">Why This Matters</h2>
+<p>If you’re building AI agents that need to remember things, retrieval
+quality directly determines agent intelligence. An agent that can’t find
+the right memory is no smarter than one with no memory at all.</p>
+<p>65% R@5 means that two out of three times, the correct memory is in
+the first five results the agent sees. At R@20, it’s nearly 80%. For a
+fully local, no-cloud-dependency system running on a laptop with a
+384-dimension embedding model, that’s solid.</p>
+<p>But more importantly, the architecture is improvable. Every component
+— stemming, scoring weights, embedding model, graph expansion — is a
+knob that can be turned. We’ve shown that systematic benchmarking and
+targeted improvements can move the needle significantly. The 13.3%
+preference score is a clear target for the next iteration.</p>
+<h2 id="the-setup">The Setup</h2>
+<p>All benchmarks were run on: - <strong>MentisDB 0.8.0</strong> with
+<code>local-embeddings</code> feature - <strong>FastEmbed
+all-MiniLM-L6-v2</strong> (384d, ONNX, runs locally) - <strong>10,866
+conversation turns</strong> from 940 sessions - <strong>500 evaluation
+questions</strong> across 6 types - Ingestion: ~300 turns/sec - Vector
+rebuild: ~3–5 minutes for 10k turns - Evaluation: ~7 queries/sec</p>
+<p>The benchmark is reproducible — run
+<code>bash lme-benches/full_bench.sh</code> from the MentisDB
+repository.</p>
+<hr />
+<p><em>MentisDB is an open-source durable memory layer for AI agents. It
+stores memories in an append-only chain, retrieves them with hybrid
+lexical+semantic+graph search, and runs entirely locally with no cloud
+dependencies. <a href="https://github.com/CloudLLM-ai/mentisdb">Learn
+more</a></em></p>
+<footer>
+<a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+<a href="https://docs.mentisdb.com">Docs</a> &middot;
+<a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
