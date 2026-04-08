@@ -4846,7 +4846,12 @@ impl MentisDb {
                 Vec::new(),
             )
         };
-        let importance = thought.importance * 0.2;
+        // Importance acts as a proxy for "user-originated content" vs
+        // "verbose assistant response". With importance 0.8 for user
+        // turns and 0.2 for assistant turns, a multiplier of 3.0 gives
+        // user thoughts +2.4 vs assistant +0.6 — enough to tip close
+        // BM25 races without overriding strong lexical signals.
+        let importance = thought.importance * 3.0;
         let confidence = thought.confidence.unwrap_or_default() * 0.1;
         let recency = self.recency_score(thought);
         // Vector-lexical fusion: when a thought has no lexical signal at all,
