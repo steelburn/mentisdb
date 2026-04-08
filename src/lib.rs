@@ -2967,8 +2967,7 @@ pub struct MentisDb {
     storage: Box<dyn StorageAdapter>,
     auto_flush: bool,
     persistence: Option<ChainPersistenceMetadata>,
-    managed_vector_sidecars:
-        HashMap<crate::search::EmbeddingMetadata, ManagedSidecarEntry>,
+    managed_vector_sidecars: HashMap<crate::search::EmbeddingMetadata, ManagedSidecarEntry>,
     pending_agent_registry_sync: bool,
     pending_agent_registry_updates: usize,
     pending_chain_registration_sync: bool,
@@ -4255,7 +4254,9 @@ impl MentisDb {
     /// Use this when a sidecar file may already exist on disk and you want it to
     /// participate in ranked-search rescoring without paying per-append ONNX cost.
     #[cfg(feature = "local-embeddings")]
-    fn register_vector_sidecar_for_search<P: crate::search::EmbeddingProvider + Send + Sync + 'static>(
+    fn register_vector_sidecar_for_search<
+        P: crate::search::EmbeddingProvider + Send + Sync + 'static,
+    >(
         &mut self,
         provider: P,
     ) {
@@ -4296,9 +4297,7 @@ impl MentisDb {
         // skip LocalTextV1 entirely — the SHA256 provider adds noise, not signal.
         #[cfg(feature = "local-embeddings")]
         {
-            self.unmanage_vector_sidecar(
-                &ManagedVectorProviderKind::LocalTextV1.metadata(),
-            );
+            self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
             match crate::search::FastEmbedProvider::try_new() {
                 Ok(p) => {
                     self.register_vector_sidecar_for_search(p);
@@ -4322,9 +4321,7 @@ impl MentisDb {
                                 crate::search::LocalTextEmbeddingProvider::new(),
                             )
                             .map_err(
-                                vector_search_error_to_io::<
-                                    crate::search::LocalTextEmbeddingError,
-                                >,
+                                vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
                             )?;
                         }
                     }
@@ -4384,9 +4381,8 @@ impl MentisDb {
                 ManagedVectorProviderKind::FastEmbedMiniLM => {
                     match crate::search::FastEmbedProvider::try_new() {
                         Ok(p) => {
-                            self.manage_vector_sidecar(p).map_err(|e| {
-                                io::Error::other(format!("fastembed sidecar: {e}"))
-                            })?;
+                            self.manage_vector_sidecar(p)
+                                .map_err(|e| io::Error::other(format!("fastembed sidecar: {e}")))?;
                         }
                         Err(e) => {
                             return Err(io::Error::other(format!(
@@ -4870,8 +4866,14 @@ impl MentisDb {
         } else {
             vector
         };
-        let total = lexical + vector_contribution
-            + graph + relation + seed_support + importance + confidence + recency;
+        let total = lexical
+            + vector_contribution
+            + graph
+            + relation
+            + seed_support
+            + importance
+            + confidence
+            + recency;
 
         Some(RankedSearchHit {
             thought,
@@ -4950,7 +4952,8 @@ impl MentisDb {
                 Ok(_) | Err(_) => continue,
             };
 
-            let mut query_documents = match entry.provider
+            let mut query_documents = match entry
+                .provider
                 .embed_documents(&[crate::search::EmbeddingInput::new("__query__", text)])
             {
                 Ok(documents) => documents,

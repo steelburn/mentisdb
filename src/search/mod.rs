@@ -50,6 +50,6 @@ pub use vector::{
 
 #[cfg(feature = "local-embeddings")]
 pub use fastembed_provider::{
-    FastEmbedProvider, FastEmbedError, FASTEMBED_MINILM_DIMENSION, FASTEMBED_MINILM_MODEL_ID,
+    FastEmbedError, FastEmbedProvider, FASTEMBED_MINILM_DIMENSION, FASTEMBED_MINILM_MODEL_ID,
     FASTEMBED_MINILM_VERSION,
 };

@@ -80,8 +80,7 @@ impl FastEmbedProvider {
     /// ONNX runtime fails to initialise.
     pub fn try_new() -> Result<Self, FastEmbedError> {
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                .with_show_download_progress(true),
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
         )
         .map_err(|e| FastEmbedError(e.to_string()))?;
         Ok(Self {
@@ -117,9 +116,6 @@ impl EmbeddingProvider for FastEmbedProvider {
         let embeddings = model
             .embed(texts, None)
             .map_err(|e| FastEmbedError(e.to_string()))?;
-        Ok(embeddings
-            .into_iter()
-            .map(EmbeddingVector::new)
-            .collect())
+        Ok(embeddings.into_iter().map(EmbeddingVector::new).collect())
     }
 }
