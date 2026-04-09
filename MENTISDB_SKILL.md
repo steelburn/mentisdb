@@ -48,21 +48,35 @@ Write **immediately** when any becomes true:
 
 | Type | Use for | Role |
 |------|---------|------|
-| Decision | Chosen direction | Memory |
-| Constraint | Hard rule, must not drift | Memory |
-| LessonLearned | Lesson from failure/fix | Retrospective |
-| Correction | Previous fact was wrong (replaces it) | Memory |
-| Mistake | Wrong action taken (distinct from Correction, which fixes facts) | Memory |
-| Reframe | Original was accurate but unhelpfully framed (Supersedes without invalidating) | Memory |
-| Insight | Non-obvious realization | Memory |
-| PreferenceUpdate | Stable user/team preference | Memory |
-| Idea | Possible future direction | Memory |
-| Hypothesis | Tentative explanation, not yet validated | Memory |
-| Plan | Committed future work shape | Memory |
-| Question | Unresolved issue worth preserving | Memory |
-| Wonder | Aspirational wish, genuine uncertainty about direction | Memory |
-| TaskComplete | Leaf task finished durably | Memory |
-| Summary | Compressed state snapshot | Checkpoint |
+| PreferenceUpdate | User/team preference changed or became explicit | Memory |
+| UserTrait | Durable characteristic of the user learned | Memory |
+| RelationshipUpdate | Agent's model of its relationship with the user changed | Memory |
+| Finding | Concrete observation recorded | Memory |
+| Insight | Higher-level synthesis or realization | Memory |
+| FactLearned | Factual piece of information learned | Memory |
+| PatternDetected | Recurring pattern across events or interactions | Memory |
+| Hypothesis | Tentative explanation or prediction | Memory |
+| Mistake | Error in prior reasoning or action | Memory |
+| Correction | Corrected version of a prior mistake (replaces fact) | Memory |
+| LessonLearned | Durable operating heuristic distilled from failure/fix | Retrospective |
+| AssumptionInvalidated | Previously trusted assumption is now wrong | Memory |
+| Constraint | Requirement or hard limit identified | Memory |
+| Plan | Plan for future work created or updated | Memory |
+| Subgoal | Smaller unit carved from a broader plan | Memory |
+| Decision | Concrete choice made | Memory |
+| StrategyShift | Agent changed its overall approach | Memory |
+| Wonder | Open-ended curiosity or exploration | Memory |
+| Question | Unresolved question preserved | Memory |
+| Idea | Possible future direction proposed | Memory |
+| Experiment | Experiment or trial proposed/executed | Memory |
+| ActionTaken | Meaningful action performed | Memory |
+| TaskComplete | Task or milestone finished durably | Memory |
+| Checkpoint | Resumption point recorded | Checkpoint |
+| StateSnapshot | Broader snapshot of current state | Memory |
+| Handoff | Work/context explicitly handed to another actor | Memory |
+| Summary | Compressed view of prior thoughts | Checkpoint |
+| Surprise | Unexpected outcome or mismatch observed | Memory |
+| Reframe | Prior thought was accurate but unhelpfully framed (Supersedes without invalidating) | Memory |
 
 ## 🔗 BACK-REFERENCING & THOUGHT GRAPH
 
