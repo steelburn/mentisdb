@@ -38,6 +38,9 @@ Write **immediately** when any becomes true:
 | Framework/ecosystem trap | LessonLearned | Retrospective |
 | Expensive operation ahead | Summary | Checkpoint |
 | Tool call surprise | LessonLearned | Retrospective |
+| Task finished durably | TaskComplete | Memory |
+| Uncertain about direction | Wonder | Memory |
+| Tentative explanation | Hypothesis | Memory |
 
 **One strong memory > many weak ones.** Link to prior thoughts with `refs` or `relations`.
 
@@ -46,15 +49,70 @@ Write **immediately** when any becomes true:
 | Type | Use for | Role |
 |------|---------|------|
 | Decision | Chosen direction | Memory |
-| Constraint | Hard rule | Memory |
+| Constraint | Hard rule, must not drift | Memory |
 | LessonLearned | Lesson from failure/fix | Retrospective |
-| Correction | Previous fact wrong (replaces) | Memory |
-| Mistake | Wrong action (distinct from Correction) | Memory |
+| Correction | Previous fact was wrong (replaces it) | Memory |
+| Mistake | Wrong action taken (distinct from Correction, which fixes facts) | Memory |
+| Reframe | Original was accurate but unhelpfully framed (Supersedes without invalidating) | Memory |
 | Insight | Non-obvious realization | Memory |
-| PreferenceUpdate | Stable preference | Memory |
-| Summary | Compressed state | Checkpoint |
+| PreferenceUpdate | Stable user/team preference | Memory |
+| Idea | Possible future direction | Memory |
+| Hypothesis | Tentative explanation, not yet validated | Memory |
+| Plan | Committed future work shape | Memory |
+| Question | Unresolved issue worth preserving | Memory |
+| Wonder | Aspirational wish, genuine uncertainty about direction | Memory |
+| TaskComplete | Leaf task finished durably | Memory |
+| Summary | Compressed state snapshot | Checkpoint |
 
-Use `refs: [index]` for positional refs. Use `relations` with `kind` (CausedBy, Corrects, Supersedes, DerivedFrom) for typed edges. 1–3 high-signal refs, not many weak ones.
+## 🔗 BACK-REFERENCING & THOUGHT GRAPH
+
+Every thought can link to prior thoughts via two mechanisms. **Always link when your new thought depends on, corrects, or derives from an earlier one.** A chain with explicit references is both searchable and navigable — it forms a thought graph that agents can traverse.
+
+- **`refs: [index]`** — positional back-references (zero-based chain indices). Simple, compact, intra-chain only.
+- **`relations`** — typed semantic edges with `kind` and `target_id` (UUID):
+
+| kind | Use when |
+|------|----------|
+| CausedBy | This thought was caused by the target |
+| Corrects | This thought corrects the target's fact |
+| Supersedes | This thought replaces the target's framing (Reframe) |
+| DerivedFrom | This insight was derived from the target |
+| Summarizes | This thought summarizes the target |
+| References | General reference to the target |
+| Supports | This thought supports the target's claim |
+| Contradicts | This thought contradicts the target |
+| ContinuesFrom | This continues work from the target |
+| RelatedTo | Loose semantic connection |
+
+Set `chain_key` on a relation to create a **cross-chain reference**.
+
+**Prefer 1–3 high-signal refs over many weak links.** Always reference the exact prior Decision, Mistake, or Checkpoint that gave rise to your new thought.
+
+## 🤖 SUB-AGENT ORCHESTRATION
+
+When dispatching sub-agents:
+
+1. **Pre-warm with shared memory** — load the chain before spawning so each agent inherits project state
+2. **Keep context ≤50%** — sub-agents must write `Summary` checkpoints, findings, and handoffs BEFORE hitting context limits or being killed/compacted
+3. **Write a TaskComplete** when a leaf task finishes durably
+4. **Write handoffs as Summary with role Checkpoint** — include what was done, what's pending, and what the next agent should pick up
+5. **Use the PM pattern** — one project manager decomposes work, dispatches parallel specialists, and synthesizes results wave by wave
+6. **Sub-agents must flush pending memories** (LessonLearned, Decision, Constraint) before exiting — if an agent dies without writing, its learnings are lost
+
+## 🧩 SKILL REGISTRY
+
+MentisDB includes a **skill manager** that works like git for agent behavior:
+
+- **Upload** a skill → creates an immutable version (like a git commit)
+- **Read** a skill → returns content + warnings + status (check warnings before trusting content!)
+- **Version** → every upload creates a new version; old versions stay accessible for audit
+- **Deprecate** → marks a skill as outdated (like a git tag, not deletion)
+- **Revoke** → marks a skill as dangerous/compromised (like a git revert)
+- **Search** → find skills by name, tag, trigger, or uploader
+
+Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `mentisdb_search_skill`, `mentisdb_skill_versions`, `mentisdb_deprecate_skill`, `mentisdb_revoke_skill`, `mentisdb_skill_manifest`
+
+**Self-improving agents:** After learning something new about your domain, upload an updated skill so the fleet's collective knowledge compounds over time. A skill checked in at the start of a project is better by the end of it.
 
 ## 🔍 RETRIEVAL
 
@@ -68,6 +126,7 @@ Use `refs: [index]` for positional refs. Use `relations` with `kind` (CausedBy, 
 | Page history | `mentisdb_traverse_thoughts` |
 | Grouped context | `mentisdb_context_bundles` |
 | Export markdown | `mentisdb_memory_markdown` |
+| Import markdown | `mentisdb_import_memory_markdown` |
 
 **Always filter** — supply text, tags, concepts, types, or time window.
 
@@ -87,3 +146,5 @@ Use `refs: [index]` for positional refs. Use `relations` with `kind` (CausedBy, 
 - Polluting chains with redundant bootstrap
 - Loading entire chains without filters
 - Forgetting to write checkpoint before context compaction
+- Dispatching sub-agents without pre-warming with shared memory
+- Letting sub-agents die without flushing pending memories
