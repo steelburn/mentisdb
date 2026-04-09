@@ -4299,17 +4299,53 @@ impl MentisDb {
     /// `mentisdbd` uses this when it opens a chain so vector sidecars remain
     /// enabled across daemon restarts.
     pub fn apply_persisted_managed_vector_sidecars(&mut self) -> io::Result<()> {
-        // When compiled with local-embeddings, always use FastEmbedMiniLM and
-        // skip LocalTextV1 entirely — the SHA256 provider adds noise, not signal.
         #[cfg(feature = "local-embeddings")]
         {
             self.unmanage_vector_sidecar(&ManagedVectorProviderKind::LocalTextV1.metadata());
+            let mut config = self.persisted_managed_vector_sidecar_config()?;
+            let fastembed_enabled = config
+                .providers
+                .iter()
+                .find(|p| p.provider_kind == ManagedVectorProviderKind::FastEmbedMiniLM)
+                .map(|p| p.enabled)
+                .unwrap_or(true);
             match crate::search::FastEmbedProvider::try_new() {
                 Ok(p) => {
-                    self.register_vector_sidecar_for_search(p);
+                    if fastembed_enabled {
+                        self.manage_vector_sidecar(p).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("FastEmbed sidecar rebuild failed: {e}"),
+                            )
+                        })?;
+                    } else {
+                        self.register_vector_sidecar_for_search(p);
+                    }
+                    let has_fastembed = config
+                        .providers
+                        .iter()
+                        .any(|p| p.provider_kind == ManagedVectorProviderKind::FastEmbedMiniLM);
+                    if !has_fastembed {
+                        for entry in &mut config.providers {
+                            if entry.provider_kind == ManagedVectorProviderKind::LocalTextV1 {
+                                entry.enabled = false;
+                            }
+                        }
+                        config.providers.push(ManagedVectorSidecarConfig {
+                            provider_kind: ManagedVectorProviderKind::FastEmbedMiniLM,
+                            enabled: fastembed_enabled,
+                        });
+                        self.save_managed_vector_sidecar_config(&config)?;
+                    }
                 }
                 Err(e) => {
-                    log::warn!("FastEmbed provider init failed, skipping: {e}");
+                    log::warn!("FastEmbed provider init failed, falling back to LocalTextV1: {e}");
+                    self.manage_vector_sidecar(
+                        crate::search::LocalTextEmbeddingProvider::new(),
+                    )
+                    .map_err(
+                        vector_search_error_to_io::<crate::search::LocalTextEmbeddingError>,
+                    )?;
                 }
             }
             Ok(())
