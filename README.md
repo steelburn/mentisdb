@@ -274,7 +274,8 @@ Once startup completes, it prints:
   Default `chain_key` used when requests omit one. Default: `borganism-brain`.
   `MENTISDB_DEFAULT_KEY` is accepted as a deprecated alias.
 - `MENTISDB_STORAGE_ADAPTER`
-  Default storage backend for newly created chains. Supported values: `binary`, `jsonl`.
+  Default storage backend for newly created chains. Only `binary` is supported for
+  new chains (JSONL is deprecated — existing JSONL chains remain readable).
   Default: `binary`
 - `MENTISDB_VERBOSE`
   When unset, verbose interaction logging defaults to `true`. Supported explicit values:
@@ -300,6 +301,11 @@ Once startup completes, it prints:
     thoughts may be lost on a hard crash or power failure, but write throughput increases
     significantly for multi-agent hubs with many concurrent writers.
   Supported values: `1`, `0`, `true`, `false`. Has no effect on the `jsonl` adapter.
+- `MENTISDB_GROUP_COMMIT_MS`
+  Group-commit window in milliseconds for the background binary writer.
+  The writer batches appends within this window before flushing to disk.
+  Lower values = lower latency; higher values = better throughput.
+  Default: `2`
 - `MENTISDB_UPDATE_CHECK`
   Background GitHub release check for `mentisdbd`. Enabled by default; set `0`, `false`, `no`,
   or `off` to disable update checks after startup. Default: `true`
@@ -315,6 +321,12 @@ Once startup completes, it prints:
 - `MENTISDB_TLS_KEY`
   Path to a PEM-encoded TLS private key for the HTTPS servers and dashboard.
   Default: `<MENTISDB_DIR>/tls/key.pem`
+- `MENTISDB_STARTUP_SOUND`
+  Play the 4-note "men-tis-D-B" startup jingle. Default: `true`. Set `0`, `false`, `no`,
+  or `off` to silence.
+- `MENTISDB_THOUGHT_SOUNDS`
+  Play a unique short sound for each thought type on append. Default: `false`. Set `1`,
+  `true`, `yes`, or `on` to enable.
 
 Example — full durability (production default):
 
@@ -377,6 +389,8 @@ REST endpoints:
 - `GET /v1/skills`
 - `GET /v1/skills/manifest`
 - `GET /v1/chains`
+- `POST /v1/chains/merge`
+- `POST /v1/vectors/rebuild`
 - `POST /v1/bootstrap`
 - `POST /v1/agents`
 - `POST /v1/agent`
@@ -398,6 +412,7 @@ REST endpoints:
 - `POST /v1/context-bundles`
 - `POST /v1/recent-context`
 - `POST /v1/memory-markdown`
+- `POST /v1/import-markdown`
 - `POST /v1/skills/upload`
 - `POST /v1/skills/search`
 - `POST /v1/skills/read`
@@ -642,6 +657,16 @@ Product rule:
 
 The ranked-search benchmark `benches/search_ranked.rs` and evaluation tests in `tests/search_ranked_eval_tests.rs` are the guardrails for that additive surface.
 
+### Search Scoring (0.8.0)
+
+Starting in 0.8.0, ranked search uses three key improvements:
+
+- **Porter stemming** — the lexical tokenizer now stems all tokens before indexing and querying so word variants share a common root (e.g. `prefers`/`preferred`/`preferences` → `prefer`). This alone improved LongMemEval R@5 from 57.2% to 61.6%.
+- **Tiered vector-lexical fusion** — when a thought has no lexical match, its vector score gets a 60× boost; weak lexical matches get a 20× ramp; strong BM25 hits receive vector as a small additive signal. This replaces flat addition and RRF, which demoted strong lexical hits.
+- **Importance-weighted scoring** — the importance weight was raised from 0.2× to 3.0× so user-originated thoughts (importance ≈ 0.8) consistently outrank verbose assistant responses (importance ≈ 0.2) in close BM25 races.
+
+These three changes took LongMemEval R@5 from 57.2% to 65.0%.
+
 ### Vector Sidecars
 
 MentisDB now exposes an additive Phase 3 vector sidecar surface for direct crate use:
@@ -685,7 +710,7 @@ Operational flow:
 
 `mentisdbd` now applies a persisted managed-vector setting every time it opens a chain.
 
-- by default each chain gets the built-in local text embedding provider (`local-text-v1`)
+- by default each chain gets the built-in FastEmbed MiniLM embedding provider (`fastembed-minilm`), which runs locally via ONNX with no cloud dependencies. The legacy `local-text-v1` provider is also available.
 - the daemon keeps that sidecar synchronized on append unless the user disables auto-sync for that chain
 - ranked search in the daemon and dashboard now uses that managed sidecar transparently, blending lexical, graph, and vector signals whenever it is enabled and available
 - the web dashboard exposes per-chain controls to:
@@ -752,7 +777,7 @@ Example `POST /v1/ranked-search` request:
 }
 ```
 
-When a managed vector sidecar such as the built-in `local-text-v1` provider is active for that chain, the ranked backend becomes `hybrid` or `hybrid_graph` and the response includes a non-zero `score.vector` component for semantic-only or semantic-boosted hits.
+When a managed vector sidecar such as the built-in `fastembed-minilm` provider is active for that chain, the ranked backend becomes `hybrid` or `hybrid_graph` and the response includes a non-zero `score.vector` component for semantic-only or semantic-boosted hits.
 
 Ranked response contract fields:
 
@@ -841,7 +866,7 @@ outside localhost.
 
 ## MCP Tool Catalog
 
-The daemon currently exposes 33 MCP tools:
+The daemon currently exposes 34 MCP tools:
 
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
@@ -859,6 +884,8 @@ The daemon currently exposes 33 MCP tools:
   Return seed-anchored grouped support context beneath the best lexical seeds.
 - `mentisdb_list_chains`
   List known chains with version, storage adapter, counts, and storage location.
+- `mentisdb_merge_chains`
+  Merge all thoughts from a source chain into a target chain, then permanently delete the source.
 - `mentisdb_list_agents`
   List the distinct agent identities participating in one chain.
 - `mentisdb_get_agent`
@@ -1260,7 +1287,7 @@ The retrospective helper:
 
 ## Thought Types And Roles
 
-MentisDB currently defines 29 semantic `ThoughtType` values and 8 operational
+MentisDB currently defines 30 semantic `ThoughtType` values and 8 operational
 `ThoughtRole` values.
 
 Thought types:
@@ -1268,7 +1295,7 @@ Thought types:
 - `PreferenceUpdate`, `UserTrait`, `RelationshipUpdate`
 - `Finding`, `Insight`, `FactLearned`, `PatternDetected`, `Hypothesis`, `Surprise`
 - `Mistake`, `Correction`, `LessonLearned`, `AssumptionInvalidated`, `Reframe`
-- `Constraint`, `Plan`, `Subgoal`, `Decision`, `StrategyShift`
+- `Constraint`, `Plan`, `Subgoal`, `Goal`, `Decision`, `StrategyShift`
 - `Wonder`, `Question`, `Idea`, `Experiment`
 - `ActionTaken`, `TaskComplete`
 - `Checkpoint`, `StateSnapshot`, `Handoff`, `Summary`
