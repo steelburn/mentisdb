@@ -4,3 +4,4 @@ target/
 .qwen/
 results/
 .fastembed_cache/
+data/

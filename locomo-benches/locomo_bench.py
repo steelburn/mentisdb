@@ -2,38 +2,35 @@
 """
 LoCoMo benchmark adapter for mentisdb.
 
-Tests retrieval recall (R@k) across ~1,986 QA pairs from long social
+Tests retrieval recall (R@k) across ~1,977 QA pairs from long social
 conversations (up to ~300 turns) spanning weeks of interaction.
 
-Question types:
-  single   — single-hop fact retrieval
-  multi    — multi-hop reasoning across 2+ turns
-  adv      — adversarial (unanswerable; should not hallucinate)
-  summary  — conversation summarization (skipped in retrieval eval)
+Question types (inferred from target count):
+  single — single-hop (1 target turn)
+  multi  — multi-hop (2+ target turns)
 
-Dataset (HuggingFace): snap-research/locomo
+Dataset: Nithish2410/benchmark-locomo (snap-research/locomo compatible)
 Reference scores (MemPalace BENCHMARKS.md, 2026):
     Hybrid v5, top-10, no rerank   88.9% R@10
     Hybrid + Sonnet rerank, top-50  100.0% R@5 (caveat: top-50 > session count)
 
 Usage:
-    pip install datasets requests
+    pip install requests
     bash locomo-benches/run_locomo.sh
 
     # Or manually:
-    python locomo-benches/locomo_bench.py \\
-        --top-k 10 \\
-        --chain locomo-$(date +%s)
+    python3 locomo-benches/locomo_bench.py --top-k 10 --limit 50
 
     # Dev run:
-    python locomo-benches/locomo_bench.py --top-k 10 --limit 20
+    python3 locomo-benches/locomo_bench.py --top-k 10 --limit 10
 
     # Force re-ingest:
-    python locomo-benches/locomo_bench.py --top-k 10 --force-reingest
+    python3 locomo-benches/locomo_bench.py --top-k 10 --force-reingest
 """
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
@@ -52,7 +49,6 @@ def _session() -> requests.Session:
 DEFAULT_BASE_URL  = "http://127.0.0.1:9472"
 DEFAULT_TOP_K     = 10
 DEFAULT_WORKERS   = 4
-DEFAULT_EVAL_W    = 8
 NEAR_MISS_K       = 50
 
 
@@ -60,19 +56,39 @@ NEAR_MISS_K       = 50
 # Dataset loading
 # ---------------------------------------------------------------------------
 
-def load_locomo(limit: int | None) -> list:
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        print("ERROR: pip install datasets", file=sys.stderr)
-        sys.exit(1)
+_ID_RE = re.compile(r"^(q\d+)_(S\w+)_(\d+)_T(\d+)$")
 
-    print("  Loading snap-research/locomo …", flush=True)
-    ds = load_dataset("snap-research/locomo", split="test", trust_remote_code=True)
-    items = list(ds)
+
+def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str, str]]:
+    items_path = f"{data_dir}/locomo_items.jsonl"
+    test_path  = f"{data_dir}/locomo_test.jsonl"
+
+    with open(items_path) as f:
+        items = json.loads(f.read())
+    with open(test_path) as f:
+        queries = json.loads(f.read())
+
+    item_map = {it["id"]: it["text"] for it in items}
+
     if limit:
-        items = items[:limit]
-    return items
+        # Limit by persona groups
+        personas = _group_queries_by_persona(queries)
+        limited_queries = []
+        for persona in sorted(personas.keys()):
+            limited_queries.extend(personas[persona][:limit])
+            if len(limited_queries) >= limit * 5:
+                break
+        queries = limited_queries[:limit]
+
+    return items, item_map, queries
+
+
+def _group_queries_by_persona(queries: list[dict]) -> dict[str, list]:
+    groups: dict[str, list] = {}
+    for q in queries:
+        persona = q["id"].split("_")[0]
+        groups.setdefault(persona, []).append(q)
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +111,14 @@ def _get(base_url: str, path: str, timeout: int = 10) -> dict:
     return r.json()
 
 
+def chain_exists(base_url: str, chain_key: str) -> bool:
+    try:
+        data = _get(base_url, "/v1/chains")
+        return chain_key in data.get("chain_keys", [])
+    except Exception:
+        return False
+
+
 def chain_thought_count(base_url: str, chain_key: str) -> int:
     try:
         data = _get(base_url, "/v1/chains")
@@ -109,14 +133,14 @@ def chain_thought_count(base_url: str, chain_key: str) -> int:
 def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
                 turn_index: int, prev_id: str | None = None,
                 retries: int = 3) -> str:
-    importance = 0.8 if speaker.lower() == "user" else 0.2
+    importance = 0.8 if speaker == "speaker_a" else 0.2
     payload = {
         "chain_key": chain_key,
         "thought_type": "FactLearned",
         "content": content,
-        "agent_id": speaker.lower(),
+        "agent_id": speaker,
         "importance": importance,
-        "tags": [f"speaker:{speaker.lower()}", f"turn:{turn_index}"],
+        "tags": [f"speaker:{speaker}", f"turn:{turn_index}"],
     }
     if prev_id:
         payload["relations"] = [{"kind": "ContinuesFrom", "target_id": prev_id}]
@@ -127,7 +151,7 @@ def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
         except Exception:
             if attempt == retries - 1:
                 raise
-            time.sleep(0.5 * (attempt + 1))
+            time.sleep(0.3 * (attempt + 1))
 
 
 def rebuild_vectors(base_url: str, chain_key: str,
@@ -161,9 +185,11 @@ def ranked_search(base_url: str, chain_key: str, query: str, limit: int) -> list
 # Ingestion
 # ---------------------------------------------------------------------------
 
-def ingest_conversation(base_url: str, chain_key: str,
-                        conversation: list[dict], workers: int) -> int:
-    turns = [(t.get("text", ""), t.get("speaker", "unknown")) for t in conversation if t.get("text", "").strip()]
+def ingest_persona(base_url: str, chain_key: str, items: list[dict],
+                   persona_prefix: str, workers: int) -> int:
+    turns = [it for it in items if it["id"].startswith(persona_prefix + "_")]
+    turns.sort(key=lambda it: _sort_key(it["id"]))
+
     total = len(turns)
     if total == 0:
         return 0
@@ -171,9 +197,12 @@ def ingest_conversation(base_url: str, chain_key: str,
     done_count = [0]
     lock = threading.Lock()
 
-    def _ingest_sequential(turns_in_session):
+    def _ingest_session(session_turns):
         prev_id = None
-        for text, speaker, idx in turns_in_session:
+        for it, idx in session_turns:
+            text = it["text"]
+            # Alternate speakers: even turns = speaker_a, odd = speaker_b
+            speaker = "speaker_a" if idx % 2 == 0 else "speaker_b"
             prev_id = append_turn(base_url, chain_key, text, speaker, idx, prev_id=prev_id)
             with lock:
                 done_count[0] += 1
@@ -182,22 +211,38 @@ def ingest_conversation(base_url: str, chain_key: str,
                     print(f"    {d}/{total} turns ingested", flush=True)
         return prev_id
 
-    if workers <= 1:
-        items = [(text, speaker, idx) for idx, (text, speaker) in enumerate(turns)]
-        _ingest_sequential(items)
-    else:
-        chunk_size = max(1, len(turns) // workers)
-        chunks = []
-        for i in range(0, len(turns), chunk_size):
-            chunk = [(text, speaker, idx) for idx, (text, speaker) in enumerate(turns[i:i+chunk_size])]
-            chunks.append(chunk)
+    # Group turns by session for sequential ingestion within sessions
+    sessions: dict[str, list] = {}
+    for it in turns:
+        m = _ID_RE.match(it["id"])
+        if m:
+            session_key = f"{m.group(1)}_{m.group(2)}_{m.group(3)}"
+            turn_idx = int(m.group(4))
+            sessions.setdefault(session_key, []).append((it, turn_idx))
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            futs = [pool.submit(_ingest_sequential, chunk) for chunk in chunks]
+    # Sort each session's turns
+    for sk in sessions:
+        sessions[sk].sort(key=lambda x: x[1])
+
+    # Ingest sessions sequentially (to maintain ContinuesFrom within sessions)
+    # Parallelize across sessions
+    if workers <= 1:
+        for sk in sorted(sessions.keys()):
+            _ingest_session(sessions[sk])
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_ingest_session, sessions[sk]) for sk in sorted(sessions.keys())]
             for f in as_completed(futs):
                 f.result()
 
     return total
+
+
+def _sort_key(item_id: str) -> tuple:
+    m = _ID_RE.match(item_id)
+    if m:
+        return (m.group(1), m.group(2), int(m.group(3)), int(m.group(4)))
+    return (item_id,)
 
 
 # ---------------------------------------------------------------------------
@@ -214,84 +259,42 @@ def _hit(evidence_texts: list[str], results: list[dict], k: int) -> bool:
     return False
 
 
-def _collect_evidence(qa: dict, conversation: list[dict]) -> list[str]:
-    evidence = qa.get("evidence", [])
-    if not evidence:
-        answer = qa.get("answer", "")
-        return [answer] if answer else []
-
-    texts = []
-    for ev in evidence:
-        if isinstance(ev, int):
-            if 0 <= ev < len(conversation):
-                texts.append(conversation[ev].get("text", ""))
-        elif isinstance(ev, str):
-            texts.append(ev)
-        elif isinstance(ev, dict):
-            texts.append(ev.get("text", ev.get("content", "")))
-    return texts if texts else [qa.get("answer", "")]
-
-
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate(base_url: str, chain_prefix: str, items: list,
-             top_k: int, workers: int) -> tuple[float, dict, list[dict], list]:
+def evaluate(base_url: str, chain_key: str, queries: list[dict],
+             item_map: dict[str, str], top_k: int) -> tuple[float, dict, list[dict]]:
     by_type: dict[str, dict] = {}
     misses: list[dict] = []
     fetch_k = max(top_k, NEAR_MISS_K)
-    all_results: list = [None] * len(items)
     lock = threading.Lock()
     done_count = [0]
     correct_count = [0]
 
-    for item_idx, item in enumerate(items):
-        conversation = item.get("conversation", [])
-        qa_pairs = item.get("qa", [])
-        item_chain = f"{chain_prefix}-item{item_idx}"
+    def _eval_one(q: dict):
+        n_targets = len(q["target_ids"])
+        qtype = "single" if n_targets == 1 else "multi"
 
-        print(f"  Ingesting item {item_idx+1}/{len(items)} "
-              f"({len(conversation)} turns, {len(qa_pairs)} QAs) …", flush=True)
-        ingest_conversation(base_url, item_chain, conversation, workers)
+        question = q["query"]
+        evidence_texts = [item_map.get(tid, "") for tid in q["target_ids"]]
+        evidence_texts = [e for e in evidence_texts if e]
 
-        for qa_idx, qa in enumerate(qa_pairs):
-            qtype_raw = qa.get("type", "single")
-            if "single" in qtype_raw:
-                qtype = "single"
-            elif "multi" in qtype_raw:
-                qtype = "multi"
-            elif "advers" in qtype_raw or "adv" in qtype_raw:
-                qtype = "adv"
-            elif "summar" in qtype_raw:
-                qtype = "summary"
-            else:
-                qtype = qtype_raw
+        raw = ranked_search(base_url, chain_key, question, fetch_k)
 
-            if qtype == "summary":
-                continue
+        hit_k  = _hit(evidence_texts, raw, top_k)
+        hit_10 = _hit(evidence_texts, raw, 10)
+        hit_20 = _hit(evidence_texts, raw, 20)
+        hit_50 = _hit(evidence_texts, raw, 50)
 
-            question = qa.get("question", "")
-            evidence = _collect_evidence(qa, conversation)
-            raw = ranked_search(base_url, item_chain, question, fetch_k)
-
-            hit_k  = _hit(evidence, raw, top_k)
-            hit_10 = _hit(evidence, raw, 10)
-            hit_20 = _hit(evidence, raw, 20)
-            hit_50 = _hit(evidence, raw, 50)
-
-            if qtype == "adv":
-                hit_k  = not hit_k
-                hit_10 = not hit_10
-                hit_20 = not hit_20
-                hit_50 = not hit_50
-
+        with lock:
             s = by_type.setdefault(qtype, {
                 "correct": 0, "total": 0, "hit_10": 0, "hit_20": 0, "hit_50": 0,
             })
             s["total"] += 1
             if hit_k:
                 s["correct"] += 1
+                correct_count[0] += 1
             if hit_10:
                 s["hit_10"] += 1
             if hit_20:
@@ -299,14 +302,14 @@ def evaluate(base_url: str, chain_prefix: str, items: list,
             if hit_50:
                 s["hit_50"] += 1
 
-            if not hit_k and qtype != "adv":
+            if not hit_k:
                 top_scores = [r.get("score", {}) for r in raw[:top_k]]
                 misses.append({
-                    "item_idx":    item_idx,
-                    "qa_idx":      qa_idx,
+                    "query_id":    q["id"],
                     "question":    question[:200],
                     "qtype":        qtype,
-                    "evidence":    [e[:200] for e in evidence[:3]],
+                    "n_targets":    n_targets,
+                    "evidence":    [e[:200] for e in evidence_texts[:3]],
                     "retrieved":   [r["thought"].get("content", "")[:200] for r in raw[:top_k]],
                     "scores":      top_scores,
                     "near_10":     hit_10,
@@ -314,23 +317,21 @@ def evaluate(base_url: str, chain_prefix: str, items: list,
                     "near_50":     hit_50,
                 })
 
-            all_results[item_idx * 1000 + qa_idx] = (
-                qa, evidence, raw, hit_k, hit_10, hit_20, hit_50
-            )
+            done_count[0] += 1
+            d = done_count[0]
+            if d % 50 == 0 or d == len(queries):
+                pct = correct_count[0] / d * 100
+                print(f"  {d}/{len(queries)} QAs — R@{top_k}: {pct:.1f}%", flush=True)
 
-            with lock:
-                done_count[0] += 1
-                if hit_k:
-                    correct_count[0] += 1
-                d = done_count[0]
-                if d % 50 == 0:
-                    pct = correct_count[0] / d * 100
-                    print(f"  {d} QAs evaluated — R@{top_k}: {pct:.1f}%", flush=True)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(_eval_one, q) for q in queries]
+        for f in as_completed(futs):
+            f.result()
 
     total_correct = sum(v["correct"] for v in by_type.values())
     total_q = sum(v["total"] for v in by_type.values())
     overall = total_correct / total_q * 100 if total_q else 0
-    return overall, by_type, misses, all_results
+    return overall, by_type, misses
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +339,7 @@ def evaluate(base_url: str, chain_prefix: str, items: list,
 # ---------------------------------------------------------------------------
 
 def print_diagnostics(by_type: dict, misses: list[dict], top_k: int) -> None:
-    print(f"\nNear-miss analysis (evidence found at wider k):")
+    print(f"\nNear-miss analysis:")
     print(f"  {'type':<12} {'total':>5}  R@{top_k:<3}  R@10  R@20  R@50")
     print(f"  {'-'*55}")
     for qtype, s in sorted(by_type.items()):
@@ -380,8 +381,8 @@ def print_diagnostics(by_type: dict, misses: list[dict], top_k: int) -> None:
             print(f"  {qtype:<12} {len(ms):>3}/{total:<3} misses  ({near} near top-10)")
 
         worst_type, worst_misses = max(miss_by_type.items(), key=lambda x: len(x[1]))
-        print(f"\nSample misses from '{worst_type}' (3 of {len(worst_misses)}):")
-        for m in worst_misses[:3]:
+        print(f"\nSample misses from '{worst_type}' (5 of {len(worst_misses)}):")
+        for m in worst_misses[:5]:
             ev_snip  = (m["evidence"][0][:120] + "…") if m["evidence"] else "(none)"
             ret_snip = (m["retrieved"][0][:120] + "…") if m["retrieved"] else "(nothing)"
             print(f"\n  Q:         {m['question'][:130]}")
@@ -405,34 +406,55 @@ def main():
     ap = argparse.ArgumentParser(description="LoCoMo benchmark for mentisdb")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--limit", type=int, default=None,
-                    help="Evaluate only first N persona-pairs (dev mode)")
+                    help="Evaluate only first N queries per persona (dev mode)")
     ap.add_argument("--chain", default=f"locomo-{int(time.time())}")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                     help="Ingestion workers (default 4)")
-    ap.add_argument("--eval-workers", type=int, default=DEFAULT_EVAL_W,
-                    help="Not used (LoCoMo evaluates sequentially per item)")
+    ap.add_argument("--data-dir", default="data",
+                    help="Directory containing locomo_items.jsonl and locomo_test.jsonl")
     ap.add_argument("--skip-vectors", action="store_true",
                     help="Skip vector sidecar rebuild after ingestion")
     ap.add_argument("--force-reingest", action="store_true",
-                    help="Force re-ingest even if chains exist")
+                    help="Force re-ingest even if chain exists")
     ap.add_argument("--output", help="Write per-type JSON results here")
     args = ap.parse_args()
-
-    chain_prefix = args.chain
 
     print(f"\nLoCoMo × mentisdb")
     print(f"  top-k        : {args.top_k}  (also computing R@10, R@20, R@{NEAR_MISS_K})")
     print(f"  limit        : {args.limit or 'full'}")
-    print(f"  chain prefix : {chain_prefix}")
+    print(f"  chain        : {args.chain}")
+    print(f"  data-dir     : {args.data_dir}")
     print(f"  endpoint     : {args.base_url}\n")
 
-    items = load_locomo(args.limit)
-    print(f"  Loaded {len(items)} persona-pairs\n")
+    items, item_map, queries = load_locomo(args.data_dir, args.limit)
+    print(f"  Loaded {len(items)} conversation turns, {len(queries)} test queries\n")
 
+    # Ingest: one chain per persona group
+    personas = sorted(set(it["id"].split("_")[0] for it in items))
+
+    do_ingest = args.force_reingest or not chain_exists(args.base_url, args.chain)
+
+    if do_ingest:
+        t0 = time.monotonic()
+        total_ingested = 0
+        for persona in personas:
+            n = ingest_persona(args.base_url, args.chain, items, persona, args.workers)
+            total_ingested += n
+        print(f"  Ingested {total_ingested} turns in {time.monotonic()-t0:.1f}s\n", flush=True)
+        time.sleep(1)
+
+        if not args.skip_vectors:
+            print("Building fastembed vector sidecar…", flush=True)
+            rebuild_vectors(args.base_url, args.chain, "fastembed-minilm")
+    else:
+        count = chain_thought_count(args.base_url, args.chain)
+        print(f"  Chain '{args.chain}' already exists ({count} thoughts) — skipping ingestion.\n")
+
+    # Evaluate
     t0 = time.monotonic()
-    overall, by_type, misses, all_results = evaluate(
-        args.base_url, chain_prefix, items, args.top_k, args.workers
+    overall, by_type, misses = evaluate(
+        args.base_url, args.chain, queries, item_map, args.top_k
     )
     elapsed = time.monotonic() - t0
 
@@ -441,7 +463,7 @@ def main():
 
     print(f"\n{'='*55}")
     print(f"LoCoMo  R@{args.top_k}: {overall:.1f}%  ({total_correct}/{total_q})")
-    print(f"Evaluation time: {elapsed:.0f}s\n")
+    print(f"Evaluation time: {elapsed:.0f}s  ({total_q/elapsed:.1f} q/s)\n")
 
     print("By question type:")
     for qtype, stats in sorted(by_type.items()):
@@ -456,6 +478,8 @@ def main():
             json.dump({
                 "overall": overall,
                 "top_k": args.top_k,
+                "total_correct": total_correct,
+                "total_queries": total_q,
                 "by_type": {
                     k: {**v, "recall_pct": v["correct"] / v["total"] * 100 if v["total"] else 0}
                     for k, v in by_type.items()
