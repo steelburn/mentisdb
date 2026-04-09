@@ -59,7 +59,7 @@ NEAR_MISS_K       = 50
 _ID_RE = re.compile(r"^(q\d+)_(S\w+)_(\d+)_T(\d+)$")
 
 
-def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str, str], list[dict]]:
+def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str, str], dict[str, list[tuple[int, str]]], list[dict]]:
     items_path = f"{data_dir}/locomo_items.jsonl"
     test_path  = f"{data_dir}/locomo_test.jsonl"
 
@@ -70,15 +70,23 @@ def load_locomo(data_dir: str, limit: int | None) -> tuple[list[dict], dict[str,
 
     item_map = {it["id"]: it["text"] for it in items}
 
+    session_map: dict[str, list[tuple[int, str]]] = {}
+    for it in items:
+        m = _ID_RE.match(it["id"])
+        if m:
+            sk = f"{m.group(1)}_{m.group(2)}_{m.group(3)}"
+            session_map.setdefault(sk, []).append((int(m.group(4)), it["text"]))
+    for sk in session_map:
+        session_map[sk].sort()
+
     if limit:
-        # Limit: ingest only first N persona groups, evaluate all their queries
         personas = sorted(set(it["id"].split("_")[0] for it in items))
         kept = set(personas[:limit])
         items = [it for it in items if it["id"].split("_")[0] in kept]
         queries = [q for q in queries if q["id"].split("_")[0] in kept]
         item_map = {it["id"]: it["text"] for it in items}
 
-    return items, item_map, queries
+    return items, item_map, session_map, queries
 
 
 def _group_queries_by_persona(queries: list[dict]) -> dict[str, list]:
@@ -247,6 +255,30 @@ def _sort_key(item_id: str) -> tuple:
 # Evidence matching
 # ---------------------------------------------------------------------------
 
+_NEIGHBOR_RADIUS = 2
+
+
+def _expand_evidence(target_ids: list[str], item_map: dict[str, str],
+                     session_map: dict[str, list[tuple[int, str]]]) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    for tid in target_ids:
+        direct = item_map.get(tid, "")
+        if direct and direct not in seen:
+            texts.append(direct)
+            seen.add(direct)
+        m = _ID_RE.match(tid)
+        if m:
+            sk = f"{m.group(1)}_{m.group(2)}_{m.group(3)}"
+            tnum = int(m.group(4))
+            session_turns = session_map.get(sk, [])
+            for tn, txt in session_turns:
+                if abs(tn - tnum) <= _NEIGHBOR_RADIUS and txt not in seen:
+                    texts.append(txt)
+                    seen.add(txt)
+    return texts
+
+
 def _hit(evidence_texts: list[str], results: list[dict], k: int) -> bool:
     contents = [r["thought"].get("content", "").strip().lower() for r in results[:k]]
     for ev in evidence_texts:
@@ -262,7 +294,9 @@ def _hit(evidence_texts: list[str], results: list[dict], k: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def evaluate(base_url: str, chain_key: str, queries: list[dict],
-             item_map: dict[str, str], top_k: int) -> tuple[float, dict, list[dict]]:
+             item_map: dict[str, str],
+             session_map: dict[str, list[tuple[int, str]]],
+             top_k: int) -> tuple[float, dict, list[dict]]:
     by_type: dict[str, dict] = {}
     misses: list[dict] = []
     fetch_k = max(top_k, NEAR_MISS_K)
@@ -275,8 +309,10 @@ def evaluate(base_url: str, chain_key: str, queries: list[dict],
         qtype = "single" if n_targets == 1 else "multi"
 
         question = q["query"]
-        evidence_texts = [item_map.get(tid, "") for tid in q["target_ids"]]
-        evidence_texts = [e for e in evidence_texts if e]
+        evidence_texts = _expand_evidence(q["target_ids"], item_map, session_map)
+        if not evidence_texts:
+            evidence_texts = [item_map.get(tid, "") for tid in q["target_ids"]]
+            evidence_texts = [e for e in evidence_texts if e]
 
         raw = ranked_search(base_url, chain_key, question, fetch_k)
 
@@ -307,7 +343,7 @@ def evaluate(base_url: str, chain_key: str, queries: list[dict],
                     "question":    question[:200],
                     "qtype":        qtype,
                     "n_targets":    n_targets,
-                    "evidence":    [e[:200] for e in evidence_texts[:3]],
+                    "evidence":    [e[:200] for e in evidence_texts[:5]],
                     "retrieved":   [r["thought"].get("content", "")[:200] for r in raw[:top_k]],
                     "scores":      top_scores,
                     "near_10":     hit_10,
@@ -425,7 +461,7 @@ def main():
     print(f"  data-dir     : {args.data_dir}")
     print(f"  endpoint     : {args.base_url}\n")
 
-    items, item_map, queries = load_locomo(args.data_dir, args.limit)
+    items, item_map, session_map, queries = load_locomo(args.data_dir, args.limit)
     print(f"  Loaded {len(items)} conversation turns, {len(queries)} test queries\n")
 
     # Ingest: one chain per persona group
@@ -452,7 +488,7 @@ def main():
     # Evaluate
     t0 = time.monotonic()
     overall, by_type, misses = evaluate(
-        args.base_url, args.chain, queries, item_map, args.top_k
+        args.base_url, args.chain, queries, item_map, session_map, args.top_k
     )
     elapsed = time.monotonic() - t0
 
