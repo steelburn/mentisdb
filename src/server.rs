@@ -2088,7 +2088,7 @@ impl MentisDbService {
             parsed_relations.push(ThoughtRelation {
                 kind,
                 target_id,
-                chain_key: None,
+                chain_key: rel.chain_key,
             });
         }
         if !parsed_relations.is_empty() {
@@ -3620,6 +3620,7 @@ struct AppendThoughtRequest {
 struct RelationInput {
     kind: String,
     target_id: String, // UUID string
+    chain_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
