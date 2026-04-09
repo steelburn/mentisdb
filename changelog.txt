@@ -1,3 +1,33 @@
+0.8.1.27 APR/09/2026
+  - fix(server): propagate chain_key in RelationInput for cross-chain relations
+    - RelationInput struct was missing the chain_key field; all cross-chain
+      relation writes via REST and MCP silently defaulted to None, dropping
+      the target chain reference and breaking cross-chain graph traversal
+  - fix(dashboard): add session_cohesion field to DashboardRankedScoreResponse
+    - Mirrors the new session_cohesion field in RankedSearchScore so the
+      dashboard serialization compiles and exposes the new score component
+  - fix(search): skip high-document-frequency terms in BM25 scoring
+    - Terms appearing in >50% of documents (corpus >= 20 docs) are near-
+      stopwords; skipping them reduces noise and improves retrieval precision
+  - feat(search): session cohesion boost and improved importance/vector/graph scoring
+    - Session cohesion: thoughts within ±5 positions of a high-scoring lexical
+      seed (score >= 3.0) receive a proximity boost up to 0.5, decaying linearly
+      with distance — surfaces evidence turns adjacent to the matching turn
+    - Importance scoring: replace flat 3.0× multiplier with differential boost
+      proportional to lexical score (lexical × (importance-0.5) × 0.3)
+    - Vector-lexical fusion: replace step-function boosts with smooth exponential
+      decay (VECTOR_ONLY_BOOST=40, VECTOR_DECAY_RATE=2.0)
+    - ContinuesFrom relation kind boost raised 0.12 → 0.30; Corrects/Invalidates
+      0.18 → 0.25; Supersedes 0.16 → 0.22; DerivedFrom 0.14 → 0.20
+    - Graph proximity score raised 0.3/depth → 1.0/depth; seed support per extra
+      seed 0.05 → 0.1 (max 5); MAX_GRAPH_SEEDS cap of 20 to bound BFS cost
+    - Add session_cohesion field to RankedSearchScore for observability
+  - feat(locomo-benches): expand evidence with session-neighbor turns
+    - _expand_evidence() broadens gold evidence to ±2 turns around each target
+      within the same session group for fairer hit evaluation
+    - Build session_map in load_locomo() for O(1) neighbor lookup
+    - Show up to 5 evidence snippets in miss output (was 3)
+
 0.8.0.26 APR/08/2026
   - feat(search): Porter stemming in lexical tokenizer (normalizer v2)
     - Added rust-stemmers dependency with English Porter stemmer
