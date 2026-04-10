@@ -847,12 +847,13 @@ Run `cargo install --git https://github.com/{} --tag {} --locked --force --bin {
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // When `local-embeddings` is enabled, fastembed pulls in aws-lc-rs while
-    // the existing TLS stack (axum-server, rcgen) uses ring.  Rustls refuses to
-    // start if both providers are compiled in without an explicit default being
-    // installed.  Install ring — the provider already used by the rest of the
-    // stack — before any TLS operations.
-    #[cfg(feature = "local-embeddings")]
+    // When the server feature is enabled, axum-server (tls-rustls) and reqwest
+    // both pull in rustls.  Depending on the feature combination, both the
+    // aws-lc-rs and ring crypto backends may be compiled in.  Rustls refuses to
+    // start if multiple providers are available without an explicit default.
+    // Install ring — the provider used by the rest of the TLS stack — before
+    // any TLS operations.
+    #[cfg(feature = "server")]
     let _ = rustls::crypto::ring::default_provider().install_default();
     raise_fd_limit();
     init_logger();
