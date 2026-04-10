@@ -44,6 +44,8 @@ Write **immediately** when any becomes true:
 
 **One strong memory > many weak ones.** Link to prior thoughts with `refs` or `relations`.
 
+When dedup is enabled (`MENTISDB_DEDUP_THRESHOLD`), near-duplicate content automatically generates a Supersedes relation — you don't need to link duplicates manually.
+
 ## 📋 THOUGHT TYPES
 
 | Type | Use for | Role |
@@ -99,6 +101,10 @@ Every thought can link to prior thoughts via two mechanisms. **Always link when 
 | ContinuesFrom | This continues work from the target |
 | RelatedTo | Loose semantic connection |
 
+Relations support optional `valid_at` and `invalid_at` timestamps for time-bounded facts. When you know a fact's validity window, set these on the relation. `append_thought` auto-sets `valid_at` to the current time if you don't provide one.
+
+When `dedup_threshold` is set, very similar content auto-generates a Supersedes relation.
+
 Set `chain_key` on a relation to create a **cross-chain reference**.
 
 **Prefer 1–3 high-signal refs over many weak links.** Always reference the exact prior Decision, Mistake, or Checkpoint that gave rise to your new thought.
@@ -142,6 +148,8 @@ Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `
 | Grouped context | `mentisdb_context_bundles` |
 | Export markdown | `mentisdb_memory_markdown` |
 | Import markdown | `mentisdb_import_memory_markdown` |
+| Point-in-time query | `mentisdb_ranked_search` with `as_of` parameter |
+| Scope-filtered search | `mentisdb_ranked_search` with `scope` parameter |
 
 **Always filter** — supply text, tags, concepts, types, or time window.
 
@@ -151,6 +159,19 @@ Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `
 - `concepts`: `hybrid-retrieval`, `session-bootstrap`
 - `importance`: 0.0–1.0 (user=0.8, assistant=0.2)
 - `confidence`: 0.0–1.0
+
+## 🎯 MEMORY SCOPES
+
+Three visibility levels control who can see a thought:
+
+- `user` (default): visible to all agents sharing the same user identity
+- `session`: visible only within the session that created it
+- `agent`: visible only to the agent that created it
+
+Set scope on append: `scope: "session"`
+Filter in search: `scope: "agent"`
+
+Scopes are stored as tags (`scope:user`, `scope:session`, `scope:agent`).
 
 ## ❌ ANTI-PATTERNS
 
@@ -163,3 +184,4 @@ Tools: `mentisdb_upload_skill`, `mentisdb_read_skill`, `mentisdb_list_skills`, `
 - Forgetting to write checkpoint before context compaction
 - Dispatching sub-agents without pre-warming with shared memory
 - Letting sub-agents die without flushing pending memories
+- Writing near-duplicate thoughts when dedup is enabled (the system auto-supersedes them anyway)
