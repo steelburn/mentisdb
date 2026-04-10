@@ -5,3 +5,4 @@ target/
 results/
 .fastembed_cache/
 data/
+locomo-benches/__pycache__/
