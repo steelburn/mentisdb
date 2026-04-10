@@ -1728,14 +1728,22 @@ impl ThoughtInput {
     }
 
     /// Attach a confidence score between `0.0` and `1.0`.
+    /// Non-finite values (NaN, Infinity) are silently ignored.
     pub fn with_confidence(mut self, confidence: f32) -> Self {
-        self.confidence = Some(confidence.clamp(0.0, 1.0));
+        if confidence.is_finite() {
+            self.confidence = Some(confidence.clamp(0.0, 1.0));
+        }
         self
     }
 
     /// Attach an importance score between `0.0` and `1.0`.
+    /// Non-finite values (NaN, Infinity) default to `0.5`.
     pub fn with_importance(mut self, importance: f32) -> Self {
-        self.importance = importance.clamp(0.0, 1.0);
+        self.importance = if importance.is_finite() {
+            importance.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
         self
     }
 
@@ -3918,8 +3926,8 @@ impl MentisDb {
             "thought_type": thought.thought_type,
             "role": thought.role,
             "content": thought.content,
-            "confidence": thought.confidence,
-            "importance": thought.importance,
+            "confidence": thought.confidence.filter(|c| c.is_finite()),
+            "importance": if thought.importance.is_finite() { thought.importance } else { 0.5 },
             "tags": thought.tags,
             "concepts": thought.concepts,
             "refs": thought.refs,

@@ -1797,7 +1797,7 @@
                 <tbody>
                   ${!agents.length
                     ? '<tr><td colspan="6" class="empty-state">No agents in this chain.</td></tr>'
-                    : agents.map(a => `
+                    : agents.filter(a => a != null).map(a => `
                       <tr>
                         <td class="mono" style="font-size:0.83rem"><a href="#agents/${encodeURIComponent(ck)}/${encodeURIComponent(a.agent_id)}" style="color:#58a6ff;text-decoration:none">${esc(a.agent_id)}</a></td>
                         <td>${esc(a.display_name || '—')}</td>
