@@ -47,6 +47,10 @@ Or target one integration explicitly:
 ```bash
 mentisdbd setup codex
 mentisdbd setup all --dry-run
+mentisdbd wizard
+mentisdbd add "The sky is blue"
+mentisdbd search "cache invalidation" --limit 5 --scope session
+mentisdbd agents
 ```
 
 Then start the daemon:
@@ -241,6 +245,9 @@ cargo install --path . --locked
 mentisdbd setup codex
 mentisdbd setup all --dry-run
 mentisdbd wizard
+mentisdbd add "The sky is blue"
+mentisdbd search "cache invalidation" --limit 5 --scope session
+mentisdbd agents
 mentisdbd
 ```
 
@@ -255,6 +262,7 @@ Before serving traffic, it:
 - migrates or reconciles discovered chains to the current schema and default storage adapter
 - verifies chain integrity and attempts repair from valid local sources when possible
 - migrates the skill registry from V1 to V2 format if needed (idempotent; safe to run repeatedly)
+- migrates chain relations from V2 to V3 format to add temporal edge validity (`valid_at`/`invalid_at`) if needed (idempotent; safe to run repeatedly)
 
 Once startup completes, it prints:
 
@@ -327,6 +335,13 @@ Once startup completes, it prints:
 - `MENTISDB_THOUGHT_SOUNDS`
   Play a unique short sound for each thought type on append. Default: `false`. Set `1`,
   `true`, `yes`, or `on` to enable.
+- `MENTISDB_DEDUP_THRESHOLD`
+  Jaccard similarity threshold for automatic deduplication on append (0.0–1.0). When
+  unset, auto-dedup is disabled. When set, a new thought whose content is sufficiently
+  similar to a recent thought receives a `Supersedes` relation instead of being stored
+  as a duplicate.
+- `MENTISDB_DEDUP_SCAN_WINDOW`
+  Number of recent thoughts to scan for dedup comparison. Default: `64`.
 
 Example — full durability (production default):
 
@@ -431,6 +446,7 @@ REST endpoints:
   "thought_type": "LessonLearned",
   "role":         "Execution",
   "content":      "...",
+  "scope":        "session",
   "tags":         ["tag1"],
   "concepts":     ["concept1"],
   "importance":   0.9,
@@ -438,14 +454,16 @@ REST endpoints:
   "refs":         [14, 22],
   "relations": [
     { "kind": "CausedBy",      "target_id": "<uuid>" },
-    { "kind": "ContinuesFrom", "target_id": "<uuid>", "chain_key": "other-chain" }
+    { "kind": "ContinuesFrom", "target_id": "<uuid>", "chain_key": "other-chain" },
+    { "kind": "Supersedes",    "target_id": "<uuid>", "valid_at": "2025-01-01T00:00:00Z", "invalid_at": "2025-12-31T23:59:59Z" }
   ]
 }
 ```
 
-`chain_key`, `role`, `tags`, `concepts`, `importance`, `confidence`, `refs`, and `relations` are optional.  
+`chain_key`, `role`, `scope`, `tags`, `concepts`, `importance`, `confidence`, `refs`, and `relations` are optional.  
 `relations[].kind` accepts: `References`, `Summarizes`, `Corrects`, `Invalidates`, `CausedBy`, `Supports`, `Contradicts`, `DerivedFrom`, `ContinuesFrom`, `RelatedTo`, `Supersedes`.  
-`relations[].chain_key` is optional — omit for intra-chain edges, set for cross-chain references.
+`relations[].chain_key` is optional — omit for intra-chain edges, set for cross-chain references.  
+`relations[].valid_at` and `relations[].invalid_at` are optional RFC 3339 timestamps that define when a relation edge is temporally valid, enabling point-in-time queries with `as_of`.
 
 ---
 
@@ -533,6 +551,8 @@ Current ranked-search behavior:
 - when a managed vector sidecar is active for the current handle, ranked search blends lexical scoring with vector similarity and the backend becomes `hybrid`
 - when `graph` is enabled alongside non-empty `text`, the backend becomes `lexical_graph` or `hybrid_graph` depending on whether vector scoring is available
 - graph expansion starts from lexical seed hits, walks `refs` and typed `relations`, and can surface supporting context that did not lexically match
+- `as_of` (RFC 3339 timestamp) filters to only relation edges that were valid at the given point in time, using each edge's `valid_at`/`invalid_at` temporal window — edges without temporal bounds are always included
+- `scope` narrows results to thoughts tagged with a matching memory scope (`user`, `session`, or `agent`); omitted scope returns all
 - when `text` is absent or blank, the backend falls back to `heuristic`
 - heuristic ordering uses lightweight importance, confidence, and recency signals
 - `total_candidates` counts the hits after filter application and ranked-signal gating, before final `limit` truncation
@@ -591,6 +611,28 @@ let ranked = RankedSearchQuery::new()
             .with_max_depth(1)
             .with_mode(GraphExpansionMode::Bidirectional),
     )
+    .with_limit(10);
+
+let results = chain.query_ranked(&ranked);
+# let _ = results;
+# Ok(())
+# }
+```
+
+Temporal and scoped ranked example:
+
+```rust,no_run
+use mentisdb::{MentisDb, MemoryScope, RankedSearchQuery, ThoughtQuery};
+use std::path::PathBuf;
+
+# fn main() -> std::io::Result<()> {
+let chain = MentisDb::open(&PathBuf::from("/tmp/tc_ranked"), "agent1", "Agent", None, None)?;
+
+let ranked = RankedSearchQuery::new()
+    .with_filter(ThoughtQuery::new())
+    .with_text("cache invalidation")
+    .with_as_of("2025-06-01T00:00:00Z")
+    .with_scope(MemoryScope::Session)
     .with_limit(10);
 
 let results = chain.query_ranked(&ranked);
@@ -669,6 +711,15 @@ Starting in 0.8.1, ranked search uses six key improvements:
 - **Graph expansion limits and relation boosts** — `MAX_GRAPH_SEEDS=20` bounds BFS cost; `ContinuesFrom` boost raised to 0.30; graph proximity 1.0/depth.
 
 These changes took LongMemEval R@5 from 57.2% to 67.6% and LoCoMo 2-persona R@10 from 55.8% to 88.7%.
+
+### Search Scoring (0.8.2)
+
+Starting in 0.8.2, ranked search adds temporal, scoped, and dedup-aware features:
+
+- **Temporal `as_of` point-in-time filtering** — `RankedSearchQuery::with_as_of(rfc3339)` restricts graph expansion to only relation edges whose `valid_at`/`invalid_at` window covers the given timestamp. Edges without temporal bounds are always included. This enables queries like "what did the agent know at the start of the sprint?"
+- **Memory scope filtering via `scope` tag** — thoughts carry a `scope` field (`user`, `session`, or `agent`) stored as `scope:<value>` tags. `RankedSearchQuery::with_scope(MemoryScope::Session)` narrows results to session-scoped memories only. Omitting scope returns thoughts from all scopes.
+- **Auto-dedup with `Supersedes` relations** — when `MENTISDB_DEDUP_THRESHOLD` is set, appending a thought whose content is sufficiently similar (Jaccard ≥ threshold) to a recent thought automatically creates a `Supersedes` relation instead of storing a duplicate. The superseded thought's id is recorded for fast exclusion.
+- **`invalidated_thought_ids` for O(1) superseded detection** — each thought tracks which earlier thoughts it supersedes. Ranked search uses this set to skip superseded thoughts in constant time without walking the full relation graph.
 
 ### Vector Sidecars
 
@@ -874,7 +925,7 @@ The daemon currently exposes 34 MCP tools:
 - `mentisdb_bootstrap`
   Create a chain if needed and write one bootstrap checkpoint when it is empty.
 - `mentisdb_append`
-  Append a durable semantic thought with optional tags, concepts, refs, and signature metadata.
+  Append a durable semantic thought with optional tags, concepts, refs, scope, and signature metadata.
 - `mentisdb_append_retrospective`
   Append a retrospective memory intended to prevent future agents from repeating a hard failure.
 - `mentisdb_search`
@@ -882,7 +933,7 @@ The daemon currently exposes 34 MCP tools:
 - `mentisdb_lexical_search`
   Return flat ranked lexical matches with explainable term and field provenance.
 - `mentisdb_ranked_search`
-  Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns.
+  Return flat ranked lexical, graph-aware, or heuristic results with additive score breakdowns. Supports `as_of` for point-in-time queries and `scope` for memory scope filtering.
 - `mentisdb_context_bundles`
   Return seed-anchored grouped support context beneath the best lexical seeds.
 - `mentisdb_list_chains`
@@ -1318,6 +1369,30 @@ Use `ThoughtType` to say what the memory means semantically, and `ThoughtRole`
 to say how the system should treat it operationally. The crate rustdoc is the
 authoritative source for per-variant semantics, and the Agent Guide on the docs
 site contains a human-oriented explanation of when to use each one.
+
+### Memory Scopes
+
+MentisDB defines a `MemoryScope` enum that controls how far a thought should propagate:
+
+- `User` (default) — visible to all agents and sessions sharing the chain
+- `Session` — visible only within the current agent session
+- `Agent` — visible only to the agent that created it
+
+Scopes are stored as tags on the thought:
+
+- `scope:user`
+- `scope:session`
+- `scope:agent`
+
+Crate API:
+
+- `ThoughtInput::with_scope(MemoryScope)` sets the scope on append
+- `RankedSearchQuery::with_scope(MemoryScope)` filters search results by scope
+
+REST API:
+
+- `POST /v1/thoughts` accepts an optional `scope` field (`"user"`, `"session"`, or `"agent"`)
+- `POST /v1/ranked-search` and `POST /v1/context-bundles` accept an optional `scope` field
 
 ---
 
