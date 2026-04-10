@@ -47,6 +47,7 @@ fastembed = { version = "5.13.1", optional = true }
 # Needed to install an explicit rustls crypto provider when local-embeddings
 # is active (fastembed pulls in aws-lc-rs; the rest of the stack uses ring).
 rustls = { version = "0.23", optional = true }
+ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

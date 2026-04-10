@@ -24,7 +24,50 @@ pub struct WizardCommand {
     pub assume_yes: bool,
 }
 
-/// Supported top-level commands for `mentisdbd` setup and wizard subcommands.
+/// Parsed `add` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddCommand {
+    /// The content to add as a thought.
+    pub content: String,
+    /// Optional thought type (defaults to "fact-learned").
+    pub thought_type: Option<String>,
+    /// Optional memory scope.
+    pub scope: Option<String>,
+    /// Optional tags.
+    pub tags: Vec<String>,
+    /// Optional agent ID.
+    pub agent_id: Option<String>,
+    /// Optional chain key.
+    pub chain_key: Option<String>,
+    /// Daemon REST URL.
+    pub url: String,
+}
+
+/// Parsed `search` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchCommand {
+    /// The search query text.
+    pub text: String,
+    /// Maximum number of results.
+    pub limit: Option<usize>,
+    /// Optional memory scope filter.
+    pub scope: Option<String>,
+    /// Optional chain key.
+    pub chain_key: Option<String>,
+    /// Daemon REST URL.
+    pub url: String,
+}
+
+/// Parsed `agents` subcommand arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsCommand {
+    /// Optional chain key.
+    pub chain_key: Option<String>,
+    /// Daemon REST URL.
+    pub url: String,
+}
+
+/// Supported top-level commands for `mentisdbd` CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     /// Print CLI help.
@@ -33,6 +76,12 @@ pub enum CliCommand {
     Setup(SetupCommand),
     /// Run the interactive setup wizard.
     Wizard(WizardCommand),
+    /// Add a thought to a running daemon.
+    Add(AddCommand),
+    /// Search thoughts on a running daemon.
+    Search(SearchCommand),
+    /// List agents on a running daemon.
+    Agents(AgentsCommand),
 }
 
 /// Parse command-line arguments for the embedded `mentisdbd` setup and wizard CLI.
@@ -58,21 +107,27 @@ where
         "-h" | "--help" | "help" => Ok(CliCommand::Help),
         "setup" => parse_setup(parts),
         "wizard" => parse_wizard(parts),
+        "add" => parse_add(parts),
+        "search" => parse_search(parts),
+        "agents" => parse_agents(parts),
         other => Err(format!("Unknown subcommand '{other}'")),
     }
 }
 
 pub(crate) fn help_text() -> &'static str {
     "\
-mentisdbd setup and wizard
+mentisdbd CLI
 
 Usage:
   mentisdbd --help
   mentisdbd
   mentisdbd setup <agent|all> [--url <url>] [--dry-run] [--yes]
   mentisdbd wizard [--url <url>] [--yes]
+  mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
+  mentisdbd search <query> [--limit <n>] [--scope <scope>] [--chain <key>] [--url <url>]
+  mentisdbd agents [--chain <key>] [--url <url>]
 
-Supported agents:
+Supported agents (setup/wizard):
   codex
   claude-code
   claude-desktop
@@ -121,11 +176,54 @@ Commands:
       --yes         Accept the wizard defaults without confirmation prompts
       --help        Show this help text
 
+  add
+    Add a thought to a running MentisDB daemon via REST.
+
+    Examples:
+      mentisdbd add \"The sky is blue\"
+      mentisdbd add \"Session fact\" --scope session --tag important
+      mentisdbd add \"Insight\" --type insight --agent my-agent
+
+    Options:
+      --type <type>    Thought type (default: fact-learned)
+      --scope <scope>  Memory scope: user, session, or agent
+      --tag <tag>      Add a tag (repeatable)
+      --agent <id>     Agent ID for the thought
+      --chain <key>    Chain key (uses daemon default if omitted)
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
+
+  search
+    Search thoughts on a running MentisDB daemon via ranked search.
+
+    Examples:
+      mentisdbd search \"cache invalidation\"
+      mentisdbd search \"performance\" --limit 5 --scope session
+
+    Options:
+      --limit <n>      Maximum results (default: 10)
+      --scope <scope>  Filter by memory scope: user, session, or agent
+      --chain <key>    Chain key (uses daemon default if omitted)
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
+
+  agents
+    List registered agents on a running MentisDB daemon.
+
+    Examples:
+      mentisdbd agents
+      mentisdbd agents --chain my-chain
+
+    Options:
+      --chain <key>    Chain key (uses daemon default if omitted)
+      --url <url>      Daemon REST URL (default: http://127.0.0.1:9472)
+      --help           Show this help text
+
 Notes:
   - `mentisdbd` with no subcommand starts the daemon.
-  - `mentisdbd --help` shows daemon help; `mentisdbd setup --help` and
-    `mentisdbd wizard --help` show the setup/wizard surface.
+  - `mentisdbd --help` shows daemon help; subcommand --help shows subcommand help.
   - `setup` writes config files; it is not scaffold-only.
+  - `add`, `search`, and `agents` require a running daemon.
 "
 }
 
@@ -218,4 +316,175 @@ pub(super) fn parse_integration(value: &str) -> Option<IntegrationKind> {
 
 pub(super) fn default_url(integration: IntegrationKind) -> &'static str {
     default_url_for_integration(integration)
+}
+
+fn default_rest_url() -> String {
+    "http://127.0.0.1:9472".to_string()
+}
+
+fn parse_add(args: Vec<String>) -> Result<CliCommand, String> {
+    if args.len() < 2 {
+        return Err("add requires <content>".to_string());
+    }
+    if matches!(args[1].as_str(), "-h" | "--help" | "help") {
+        return Ok(CliCommand::Help);
+    }
+    let content = args[1].clone();
+    let mut thought_type = None;
+    let mut scope = None;
+    let mut tags = Vec::new();
+    let mut agent_id = None;
+    let mut chain_key = None;
+    let mut url = default_rest_url();
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--type" => {
+                thought_type = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--type requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--scope" => {
+                scope = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--scope requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--tag" => {
+                tags.push(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--tag requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--agent" => {
+                agent_id = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--agent requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--chain" => {
+                chain_key = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--chain requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--url" => {
+                url = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--url requires a value".to_string())?
+                    .clone();
+                index += 2;
+            }
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            other => return Err(format!("Unexpected argument '{other}' for add")),
+        }
+    }
+    Ok(CliCommand::Add(AddCommand {
+        content,
+        thought_type,
+        scope,
+        tags,
+        agent_id,
+        chain_key,
+        url,
+    }))
+}
+
+fn parse_search(args: Vec<String>) -> Result<CliCommand, String> {
+    if args.len() < 2 {
+        return Err("search requires <query>".to_string());
+    }
+    if matches!(args[1].as_str(), "-h" | "--help" | "help") {
+        return Ok(CliCommand::Help);
+    }
+    let text = args[1].clone();
+    let mut limit = None;
+    let mut scope = None;
+    let mut chain_key = None;
+    let mut url = default_rest_url();
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--limit" => {
+                limit = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--limit requires a value".to_string())?
+                        .parse::<usize>()
+                        .map_err(|_| "invalid --limit value")?,
+                );
+                index += 2;
+            }
+            "--scope" => {
+                scope = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--scope requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--chain" => {
+                chain_key = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--chain requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--url" => {
+                url = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--url requires a value".to_string())?
+                    .clone();
+                index += 2;
+            }
+            "-h" | "--help" => return Ok(CliCommand::Help),
+            other => return Err(format!("Unexpected argument '{other}' for search")),
+        }
+    }
+    Ok(CliCommand::Search(SearchCommand {
+        text,
+        limit,
+        scope,
+        chain_key,
+        url,
+    }))
+}
+
+fn parse_agents(args: Vec<String>) -> Result<CliCommand, String> {
+    let mut chain_key = None;
+    let mut url = default_rest_url();
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--chain" => {
+                chain_key = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| "--chain requires a value".to_string())?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--url" => {
+                url = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--url requires a value".to_string())?
+                    .clone();
+                index += 2;
+            }
+            "-h" | "--help" | "help" => return Ok(CliCommand::Help),
+            other => return Err(format!("Unexpected argument '{other}' for agents")),
+        }
+    }
+    Ok(CliCommand::Agents(AgentsCommand { chain_key, url }))
 }
