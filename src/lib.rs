@@ -2955,7 +2955,7 @@ where
 const MANAGED_VECTOR_SIDECAR_CONFIG_VERSION: u32 = 1;
 
 /// Built-in provider kinds that MentisDB can manage persistently per chain.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManagedVectorProviderKind {
     /// Deterministic in-process hashed text embeddings used by `mentisdbd`.
@@ -2968,6 +2968,32 @@ pub enum ManagedVectorProviderKind {
     /// caller skips it with a log warning rather than panicking.
     #[cfg(feature = "local-embeddings")]
     FastEmbedMiniLM,
+}
+
+impl<'de> Deserialize<'de> for ManagedVectorProviderKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "local-text-v1" => Ok(Self::LocalTextV1),
+            #[cfg(feature = "local-embeddings")]
+            "fastembed-minilm" | "fast-embed-mini-l-m" => Ok(Self::FastEmbedMiniLM),
+            #[cfg(not(feature = "local-embeddings"))]
+            "fastembed-minilm" | "fast-embed-mini-l-m" => {
+                eprintln!(
+                    "warning: sidecar config references fastembed-minilm but \
+                     local-embeddings feature is not compiled; falling back to local-text-v1"
+                );
+                Ok(Self::LocalTextV1)
+            }
+            other => {
+                eprintln!(
+                    "warning: unknown managed vector provider kind '{other}', \
+                     falling back to local-text-v1"
+                );
+                Ok(Self::LocalTextV1)
+            }
+        }
+    }
 }
 
 impl ManagedVectorProviderKind {
