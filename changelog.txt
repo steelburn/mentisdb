@@ -1,55 +1,48 @@
-0.8.1.28 APR/10/2026
-  - feat(search): tune vector-lexical fusion and BM25 DF cutoff for retrieval gains
-    - Lower DF cutoff from 50% to 30% — filters non-discriminative entity names
-      that appear in many turns without contributing relevance signal
-    - VECTOR_ONLY_BOOST 40→35, VECTOR_DECAY_RATE 2.0→3.0 — faster exponential
-      decay reduces vector interference with moderate-lexical results, improving
-      ranking precision for queries with partial lexical overlap
-    - Session cohesion: radius 5→8, boost 0.5→0.8, skip seeds with lexical≥5.0,
-      exclude self from cohesion (nearest>0 guard)
-    - LoCoMo 2-persona R@10: 87.4%→88.7%, single-hop 89.4%→90.7%
-    - LoCoMo 10-persona R@10: 74.2% (new full benchmark)
-    - LongMemEval R@5: 65.0%→67.6%, R@10: 70.6%→73.2%
-  - fix(server): add session_cohesion field to RankedSearchScoreResponse
-    - Missing from commit c6ad371 which only added it to the dashboard response;
-      REST /v1/ranked-search would fail to compile from git HEAD
-  - fix(dashboard): guard against NaN/Infinity floats and null agents
-    - with_confidence() and with_importance() now reject non-finite floats
-      (NaN.clamp() returns NaN in Rust, which crashes serde_json serialization)
-    - thought_json() sanitizes confidence/importance before json!() macro
-    - renderAgentList() filters null agents to prevent JS TypeError
-  - fix(ci): rustfmt formatting issue in session cohesion code
-    - Use abs_diff() for correct single-line formatting that passes CI check
-
-0.8.1.27 APR/09/2026
-  - fix(server): propagate chain_key in RelationInput for cross-chain relations
-    - RelationInput struct was missing the chain_key field; all cross-chain
-      relation writes via REST and MCP silently defaulted to None, dropping
-      the target chain reference and breaking cross-chain graph traversal
-  - fix(dashboard): add session_cohesion field to DashboardRankedScoreResponse
-    - Mirrors the new session_cohesion field in RankedSearchScore so the
-      dashboard serialization compiles and exposes the new score component
-  - fix(search): skip high-document-frequency terms in BM25 scoring
-    - Terms appearing in >50% of documents (corpus >= 20 docs) are near-
-      stopwords; skipping them reduces noise and improves retrieval precision
+0.8.1.27 APR/10/2026
   - feat(search): session cohesion boost and improved importance/vector/graph scoring
-    - Session cohesion: thoughts within ±5 positions of a high-scoring lexical
-      seed (score >= 3.0) receive a proximity boost up to 0.5, decaying linearly
-      with distance — surfaces evidence turns adjacent to the matching turn
+    - Session cohesion: thoughts within ±8 positions of a high-scoring lexical
+      seed (score >= 3.0) receive a proximity boost up to 0.8, decaying linearly
+      with distance — surfaces evidence turns adjacent to the matching turn but
+      sharing no lexical terms; seeds with lexical≥5.0 excluded from boost;
+      self excluded via nearest>0 guard
     - Importance scoring: replace flat 3.0× multiplier with differential boost
       proportional to lexical score (lexical × (importance-0.5) × 0.3)
     - Vector-lexical fusion: replace step-function boosts with smooth exponential
-      decay (VECTOR_ONLY_BOOST=40, VECTOR_DECAY_RATE=2.0)
+      decay; VECTOR_ONLY_BOOST=35, VECTOR_DECAY_RATE=3.0 — faster decay reduces
+      vector interference with moderate-lexical results, improving ranking
+      precision for queries with partial lexical overlap
+    - BM25 DF cutoff lowered 50%→30% — filters non-discriminative entity names
+      that appear in many turns without contributing relevance signal
     - ContinuesFrom relation kind boost raised 0.12 → 0.30; Corrects/Invalidates
       0.18 → 0.25; Supersedes 0.16 → 0.22; DerivedFrom 0.14 → 0.20
     - Graph proximity score raised 0.3/depth → 1.0/depth; seed support per extra
       seed 0.05 → 0.1 (max 5); MAX_GRAPH_SEEDS cap of 20 to bound BFS cost
     - Add session_cohesion field to RankedSearchScore for observability
+    - LoCoMo 2-persona R@10: 55.8% (baseline) → 88.7%, single-hop 90.7%
+    - LoCoMo 10-persona R@10: 74.2% (full benchmark, 1977 queries)
+    - LongMemEval R@5: 65.0% → 67.6%, R@10: 70.6% → 73.2%
   - feat(locomo-benches): expand evidence with session-neighbor turns
     - _expand_evidence() broadens gold evidence to ±2 turns around each target
       within the same session group for fairer hit evaluation
     - Build session_map in load_locomo() for O(1) neighbor lookup
     - Show up to 5 evidence snippets in miss output (was 3)
+  - fix(dashboard): guard against NaN/Infinity floats and null agents
+    - with_confidence() and with_importance() now reject non-finite floats
+      (NaN.clamp() returns NaN in Rust, which crashes serde_json serialization)
+    - thought_json() sanitizes confidence/importance before json!() macro
+    - renderAgentList() filters null agents to prevent JS TypeError
+  - fix(server): propagate chain_key in RelationInput for cross-chain relations
+    - RelationInput struct was missing the chain_key field; all cross-chain
+      relation writes via REST and MCP silently defaulted to None, dropping
+      the target chain reference and breaking cross-chain graph traversal
+  - fix(server): add session_cohesion field to RankedSearchScoreResponse
+    - Missing from initial session_cohesion commit which only added it to the
+      dashboard response; REST /v1/ranked-search would fail to compile
+  - fix(dashboard): add session_cohesion field to DashboardRankedScoreResponse
+    - Mirrors the new session_cohesion field in RankedSearchScore so the
+      dashboard serialization compiles and exposes the new score component
+  - fix(ci): rustfmt formatting issue in session cohesion code
+    - Use abs_diff() for correct single-line formatting that passes CI check
 
 0.8.0.26 APR/08/2026
   - feat(search): Porter stemming in lexical tokenizer (normalizer v2)
