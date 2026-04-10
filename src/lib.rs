@@ -7405,52 +7405,6 @@ fn migrate_legacy_thoughts(legacy_thoughts: Vec<LegacyThoughtV0>) -> (Vec<Though
     (migrated, agent_registry)
 }
 
-/// Migrate schema-V2 thoughts (3-field `LegacyThoughtRelationV2`) to the
-/// current schema (5-field `ThoughtRelation` with `valid_at` / `invalid_at`).
-///
-/// Unlike `migrate_legacy_thoughts` which also rebuilds the agent registry,
-/// this function only converts the thought data. The caller is responsible for
-/// persisting the migrated chain (typically via `persist_thoughts_to_path`)
-/// so that future opens use the V3 layout directly.
-fn migrate_v2_thoughts(v2_thoughts: Vec<LegacyThoughtV1>) -> Vec<Thought> {
-    let mut migrated = Vec::with_capacity(v2_thoughts.len());
-    let mut prev_hash = String::new();
-
-    for legacy in v2_thoughts {
-        let thought = Thought {
-            schema_version: MENTISDB_CURRENT_VERSION,
-            id: legacy.id,
-            index: legacy.index,
-            timestamp: legacy.timestamp,
-            session_id: legacy.session_id,
-            agent_id: legacy.agent_id,
-            signing_key_id: legacy.signing_key_id,
-            thought_signature: legacy.thought_signature,
-            thought_type: legacy.thought_type,
-            role: legacy.role,
-            content: legacy.content,
-            confidence: legacy.confidence,
-            importance: legacy.importance,
-            tags: legacy.tags,
-            concepts: legacy.concepts,
-            refs: legacy.refs,
-            relations: legacy
-                .relations
-                .into_iter()
-                .map(ThoughtRelation::from)
-                .collect(),
-            prev_hash: prev_hash.clone(),
-            hash: String::new(),
-        };
-        let hash = compute_thought_hash(&thought);
-        let thought = Thought { hash, ..thought };
-        prev_hash = thought.hash.clone();
-        migrated.push(thought);
-    }
-
-    migrated
-}
-
 // ---------------------------------------------------------------------------
 // MEMORY.md import helpers
 // ---------------------------------------------------------------------------
@@ -7822,32 +7776,177 @@ fn load_binary_thoughts(file_path: &Path) -> io::Result<Vec<Thought>> {
         if is_current {
             return Ok(thoughts);
         }
+        // All thoughts deserialized as V3 but schema is older. This happens
+        // when every thought has empty relations. The data is silently wrong
+        // (field offsets after relations are misaligned) so we must fall
+        // through to the legacy path.
     }
 
     // Current schema failed — the chain was written with an older schema.
-    // Peek at the schema_version field of the first thought to determine the
-    // migration path. The schema_version is always the first u32 in the
-    // bincode payload, after the 8-byte length prefix.
+    // Use per-thought schema version detection so that mixed-schema chains
+    // (e.g. V1 thoughts followed by V2 thoughts appended by a later daemon)
+    // are handled correctly. Each thought's payload is read individually,
+    // its schema_version varint is peeked, and the correct legacy type is
+    // used for deserialization.
     file.rewind()?;
-    let schema_version = peek_first_schema_version(&mut file)?;
-    file.rewind()?;
+    load_binary_thoughts_per_thought(&mut file)
+}
 
-    match schema_version {
-        0 | 1 => {
-            let v0_thoughts = read_length_prefixed_thoughts::<LegacyThoughtV0>(&mut file)?;
-            Ok(migrate_legacy_thoughts(v0_thoughts).0)
+/// Read a binary chain thought-by-thought, detecting each thought's schema
+/// version individually and dispatching to the correct legacy deserializer.
+///
+/// This handles mixed-schema chains where early thoughts were written by an
+/// older daemon (e.g. schema V1 with 2-field `ThoughtRelation`) and later
+/// thoughts were appended by a newer daemon (e.g. schema V2 with 3-field
+/// `ThoughtRelation`).
+fn load_binary_thoughts_per_thought(reader: &mut impl Read) -> io::Result<Vec<Thought>> {
+    let mut thoughts = Vec::new();
+    loop {
+        let mut length_bytes = [0_u8; 8];
+        match reader.read_exact(&mut length_bytes) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
         }
-        2 => {
-            let v2_thoughts = read_length_prefixed_thoughts::<LegacyThoughtV1>(&mut file)?;
-            Ok(migrate_v2_thoughts(v2_thoughts))
+        let length_u64 = u64::from_le_bytes(length_bytes);
+        if length_u64 > MAX_THOUGHT_PAYLOAD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "binary thought payload length {length_u64} exceeds maximum {MAX_THOUGHT_PAYLOAD_BYTES}"
+                ),
+            ));
         }
-        v => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
-                 Please upgrade mentisdb to open this chain."
-            ),
-        )),
+        let mut payload = vec![0_u8; length_u64 as usize];
+        reader.read_exact(&mut payload)?;
+
+        // Decode the schema_version varint from the start of the payload.
+        let (schema_version, _): (u32, usize) =
+            bincode::decode_from_slice(&payload, bincode::config::standard()).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to decode schema version from thought: {e}"),
+                )
+            })?;
+
+        let thought = match schema_version {
+            v if v == MENTISDB_CURRENT_VERSION => {
+                let (t, _): (Thought, usize) =
+                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                        .map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Failed to deserialize thought: {e}"),
+                            )
+                        })?;
+                t
+            }
+            0 | 1 => {
+                let (legacy, _): (LegacyThoughtV0, usize) =
+                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                        .map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Failed to deserialize schema-v0/v1 thought: {e}"),
+                            )
+                        })?;
+                Thought {
+                    schema_version: MENTISDB_CURRENT_VERSION,
+                    id: legacy.id,
+                    index: legacy.index,
+                    timestamp: legacy.timestamp,
+                    session_id: legacy.session_id,
+                    agent_id: legacy.agent_id,
+                    signing_key_id: legacy.signing_key_id,
+                    thought_signature: legacy.thought_signature,
+                    thought_type: legacy.thought_type,
+                    role: legacy.role,
+                    content: legacy.content,
+                    confidence: legacy.confidence,
+                    importance: legacy.importance,
+                    tags: legacy.tags,
+                    concepts: legacy.concepts,
+                    refs: legacy.refs,
+                    relations: legacy
+                        .relations
+                        .into_iter()
+                        .map(ThoughtRelation::from)
+                        .collect(),
+                    prev_hash: String::new(),
+                    hash: String::new(),
+                }
+            }
+            2 => {
+                let (legacy, _): (LegacyThoughtV1, usize) =
+                    bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                        .map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Failed to deserialize schema-v2 thought: {e}"),
+                            )
+                        })?;
+                Thought {
+                    schema_version: MENTISDB_CURRENT_VERSION,
+                    id: legacy.id,
+                    index: legacy.index,
+                    timestamp: legacy.timestamp,
+                    session_id: legacy.session_id,
+                    agent_id: legacy.agent_id,
+                    signing_key_id: legacy.signing_key_id,
+                    thought_signature: legacy.thought_signature,
+                    thought_type: legacy.thought_type,
+                    role: legacy.role,
+                    content: legacy.content,
+                    confidence: legacy.confidence,
+                    importance: legacy.importance,
+                    tags: legacy.tags,
+                    concepts: legacy.concepts,
+                    refs: legacy.refs,
+                    relations: legacy
+                        .relations
+                        .into_iter()
+                        .map(ThoughtRelation::from)
+                        .collect(),
+                    prev_hash: String::new(),
+                    hash: String::new(),
+                }
+            }
+            v => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Unknown schema version {v}; this version of mentisdb supports up to schema {MENTISDB_CURRENT_VERSION}. \
+                         Please upgrade mentisdb to open this chain."
+                    ),
+                ));
+            }
+        };
+        thoughts.push(thought);
+    }
+
+    // Rebuild hash chain and agent registry for migrated thoughts.
+    let needs_migration = thoughts
+        .first()
+        .is_some_and(|t| t.schema_version == MENTISDB_CURRENT_VERSION)
+        && thoughts
+            .iter()
+            .any(|t| t.hash.is_empty() || t.prev_hash.is_empty());
+    if needs_migration {
+        rebuild_hash_chain(&mut thoughts);
+    }
+
+    Ok(thoughts)
+}
+
+/// Rebuild the hash chain for thoughts that have empty `prev_hash` or `hash`
+/// fields (typically after per-thought migration from a legacy schema).
+fn rebuild_hash_chain(thoughts: &mut [Thought]) {
+    let mut prev_hash = String::new();
+    for thought in thoughts.iter_mut() {
+        thought.prev_hash = prev_hash.clone();
+        let hash = compute_thought_hash(thought);
+        thought.hash = hash;
+        prev_hash = thought.hash.clone();
     }
 }
 
