@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI</title>
+  <title>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI Subcommands</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -42,7 +42,7 @@
 <div class="back"><a href="index.html">&larr; Blog</a></div>
 <div class="meta">April 10, 2026</div>
 
-<h1>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI</h1>
+<h1>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI Subcommands</h1>
 
 <p>
   0.8.2 closes the four biggest feature gaps we identified in our
@@ -62,7 +62,7 @@
     <tr><td>Temporal edge validity</td><td>Point-in-time queries, time-bounded relations</td><td>Graphiti, Mem0</td></tr>
     <tr><td>Memory dedup/merge</td><td>Auto-Supersedes on near-duplicate append</td><td>Mem0, Cognee</td></tr>
     <tr><td>Multi-level scopes</td><td>User / Session / Agent visibility tags</td><td>Mem0, Letta</td></tr>
-    <tr><td>CLI tool</td><td>add, search, agents via daemon REST</td><td>Zep, Cognee</td></tr>
+    <tr><td>CLI subcommands</td><td>add, search, agents via daemon REST</td><td>Zep, Cognee</td></tr>
   </tbody>
 </table>
 
@@ -187,11 +187,13 @@ let query = RankedSearchQuery::new()
   surface passes it through tags as well.
 </p>
 
-<h2 id="cli-tool">4. CLI Tool</h2>
+<h2 id="cli-subcommands">4. CLI Subcommands</h2>
 
 <p>
-  Until now, the only way to interact with MentisDB outside of an agent session was the
-  web dashboard. 0.8.2 adds three CLI subcommands that talk to a running daemon via REST:
+  The <code>mentisdbd</code> binary already had <code>setup</code> and <code>wizard</code>
+  subcommands for integration configuration. 0.8.2 adds three more that talk to a running
+  daemon via REST, giving operators a quick way to add, search, and inspect memories
+  without opening the dashboard or writing an MCP client:
 </p>
 
 <pre><code># Add a thought
@@ -263,8 +265,8 @@ mentisdbd agents --chain my-project
   <li><strong>Append-only integrity.</strong> Temporal invalidation is query-time only.
       No existing thought is ever mutated. Every historical hash remains verifiable.</li>
   <li><strong>Zero new dependencies for core features.</strong> Jaccard uses the existing
-      lexical tokenizer. Scopes use existing tags. The CLI adds <code>ureq</code> but it's
-      only needed for the CLI subcommands, not the library.</li>
+      lexical tokenizer. Scopes use existing tags. The CLI subcommands add <code>ureq</code> but it's
+      only needed for those subcommands, not the library.</li>
   <li><strong>Backward-compatible by default.</strong> Dedup is opt-in. Scopes default to
       User. Temporal edges default to None. Old chains migrate transparently.</li>
 </ol>
