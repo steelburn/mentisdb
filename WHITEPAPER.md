@@ -1,383 +1,534 @@
 # MentisDB White Paper
 
-Note: the product is now named MentisDB. Some code artifacts in this repo may
-still carry the legacy `thoughtchain` name during the transition.
-
 **Author:** Angel Leon
 
-## Abstract
+## 1. Abstract
 
-Modern agent frameworks are still weak at long-term memory. In practice, memory is often reduced to ad hoc prompt stuffing, fragile `MEMORY.md` files, or proprietary session state that is hard to inspect, hard to transfer, and easy to lose or tamper with. MentisDB is a simple, durable alternative: an append-only, semantically typed memory ledger for agents and teams of agents.
+Modern agent frameworks treat long-term memory as an afterthought. In practice, memory is reduced to ad hoc prompt stuffing, fragile `MEMORY.md` files, or proprietary session state that is hard to inspect, hard to transfer, and easy to lose or tamper with. MentisDB is a durable, semantically typed memory engine that replaces these ad hoc approaches with an append-only, hash-chained ledger designed for agents and multi-agent teams.
 
-MentisDB stores important thoughts, decisions, corrections, constraints, checkpoints, and handoffs as structured records in a hash-chained log. The chain model is storage-agnostic through a storage adapter layer, with binary storage as the current default backend and JSONL still supported. This makes memory replayable, queryable, portable, and auditable. It improves agent continuity across sessions, supports collaboration across specialized agents, and creates a clear foundation for future transparency, accountability, and regulatory compliance.
+MentisDB stores thoughts -- structured, timestamped, typed, attributable records -- in an append-only hash chain. The chain model is storage-agnostic through a `StorageAdapter` interface, with binary (length-prefixed bincode) as the default backend. A dedicated ranked-retrieval layer combines BM25 lexical scoring, optional vector-semantic similarity, graph-aware expansion from typed relation edges, session cohesion signals, and importance weighting. Temporal edge validity (`valid_at`/`invalid_at`) enables point-in-time queries. Automatic deduplication via Jaccard similarity prevents near-duplicate pollution. Memory scopes (User/Session/Agent) provide visibility isolation without physical chain partitioning.
 
-## Problem Statement
+Benchmarks on standard long-term memory evaluations confirm the retrieval quality: LoCoMo 2-persona R@10 = 88.7%, LoCoMo 10-persona R@10 = 74.2%, LongMemEval R@5 = 67.6% / R@10 = 73.2%.
 
-Today’s agent memory systems are messy.
+The system ships as a single Rust crate with an optional daemon (`mentisdbd`) exposing MCP, REST, and HTTPS dashboard surfaces. It requires no external databases, no LLM API keys for core operation, and no cloud dependencies.
 
-- Long-term memory is often just another prompt.
-- Durable memory is often a mutable text file.
-- Context handoff between agents is brittle and lossy.
-- Memory is rarely semantic enough for precise retrieval.
-- Auditability and provenance are usually missing.
+## 2. Architecture
 
-This creates operational and governance problems.
+### 2.1 Core Data Model
 
-- Agents forget important constraints.
-- Teams of agents repeat mistakes.
-- Supervisors cannot easily inspect how a decision evolved.
-- A malicious or faulty agent can rewrite or erase context.
-- Future regulation will likely require stronger traceability than current frameworks provide.
+The fundamental unit of memory is a `Thought`:
 
-## MentisDB
+```rust
+pub struct Thought {
+    pub schema_version: u32,
+    pub id: Uuid,
+    pub index: usize,
+    pub timestamp: DateTime<Utc>,
+    pub agent_id: String,
+    pub signing_key_id: Option<String>,
+    pub thought_signature: Option<Vec<u8>>,
+    pub thought_type: ThoughtType,
+    pub role: ThoughtRole,
+    pub content: String,
+    pub tags: Vec<String>,
+    pub concepts: Vec<String>,
+    pub confidence: Option<f64>,
+    pub importance: Option<f64>,
+    pub scope: Option<MemoryScope>,
+    pub refs: Vec<usize>,
+    pub relations: Vec<ThoughtRelation>,
+    pub prev_hash: String,
+    pub hash: String,
+}
+```
 
-MentisDB is a lightweight memory primitive for agents.
+A `ThoughtInput` is the caller-authored memory proposal. It contains the semantic payload but omits chain-managed fields (`index`, `timestamp`, `hash`, `prev_hash`). This prevents agents from forging chain mechanics.
 
-Each memory record, or thought, is:
+### 2.2 Hash Chain
 
-- append-only
-- timestamped
-- semantically typed
-- attributable to an agent
-- linkable to previous thoughts
-- hashed into a chain for tamper detection
+Each thought includes `prev_hash` (the hash of the preceding thought) and its own `hash`. The hash is computed over the canonical bincode serialization of the thought record. This creates a blockchain-style integrity ledger: modifying or removing any thought breaks the chain from that point forward.
 
-Rather than storing raw chain-of-thought, MentisDB stores durable cognitive checkpoints: facts learned, plans, insights, corrections, constraints, summaries, handoffs, and execution state.
+This is a practical integrity mechanism for agent memory, not a public cryptocurrency system. The hash chain makes offline tampering detectable. Optional Ed25519 signing fields (`signing_key_id`, `thought_signature`) provide stronger provenance controls for agents that register public keys in the agent registry.
 
-## Core Design
+### 2.3 ThoughtRelation
 
-MentisDB combines five ideas.
+Typed edges connect thoughts into a navigable graph:
 
-### 1. Semantic Memory
+```rust
+pub struct ThoughtRelation {
+    pub kind: ThoughtRelationKind,
+    pub target_id: Uuid,
+    pub chain_key: Option<String>,
+    pub valid_at: Option<DateTime<Utc>>,
+    pub invalid_at: Option<DateTime<Utc>>,
+}
+```
 
-Thoughts are explicitly typed. This makes memory retrieval much more useful than searching free-form logs or transcripts.
+`chain_key` enables cross-chain references. `valid_at` and `invalid_at` define temporal validity windows for point-in-time queries.
 
-Examples include:
+### 2.4 Agent Registry
 
-- preferences
-- user traits
-- insights
-- lessons learned
-- facts learned
-- hypotheses
-- mistakes
-- corrections
-- constraints
-- decisions
-- plans
-- questions
-- ideas
-- experiments
-- checkpoints
-- handoffs
-- summaries
+Agent profile metadata lives in a per-chain `AgentRegistry` sidecar rather than being duplicated inside every thought record. The registry stores:
 
-### 2. Hash-Chained Integrity
+- `display_name`, `agent_owner`, `description`
+- `aliases` (historical or alternate names)
+- `status` (active / revoked)
+- `public_keys` (Ed25519 verification keys)
+- per-chain activity counters (`thought_count`, `first_seen_index`, `last_seen_index`)
 
-Thoughts are stored in an append-only hash chain, effectively a small blockchain for agent memory. Each record includes the previous hash and its own hash. This makes offline tampering detectable and gives the chain an auditable history.
+Thoughts carry only the stable `agent_id`. The registry resolves identity metadata at read time, keeping thought records small and the identity model consistent. The registry is administrable directly through library calls, MCP tools, and REST endpoints -- agents can be pre-registered, documented, disabled, or provisioned with keys before writing any thoughts.
 
-This is not presented as a public cryptocurrency system. It is a practical blockchain-style ledger for memory integrity.
+## 3. Schema Evolution & Migration
 
-### 3. Shared Multi-Agent Memory
+Append-only memory still evolves. MentisDB versions its schemas and provides migration paths.
 
-MentisDB supports multiple agents writing to the same chain. Each thought carries a stable:
+### 3.1 Schema Versions
 
-- `agent_id`
+| Version | Constant | Changes |
+|---------|----------|---------|
+| V0 | `MENTISDB_SCHEMA_V0` | Original format; no explicit `schema_version` field |
+| V1 | `MENTISDB_SCHEMA_V1` | Adds explicit `schema_version`, optional `signing_key_id` and `thought_signature`, agent registry sidecar |
+| V2 | `MENTISDB_SCHEMA_V2` | Adds `ThoughtType::Reframe`, `ThoughtRelationKind::Supersedes`, optional cross-chain `ThoughtRelation::chain_key` |
+| V3 | `MENTISDB_SCHEMA_V3` | Adds temporal validity fields `ThoughtRelation::valid_at` and `ThoughtRelation::invalid_at` |
 
-Agent profile metadata such as display name, owner, aliases, descriptions, and public keys live in a per-chain agent registry rather than being duplicated inside every thought record.
+The current version constant is `MENTISDB_CURRENT_VERSION = MENTISDB_SCHEMA_V3`.
 
-This allows a single chain to represent the work of a team, a workflow, a tenant, or a project. Memory can then be searched not only by content and type, but also by who produced it, while keeping the durable thought records smaller and the identity model more consistent.
+### 3.2 Per-Thought Version Detection
 
-The agent registry is no longer just passive metadata inferred from old thoughts. It can now be administered directly through library calls, MCP tools, and REST endpoints. That means agents can be pre-registered, documented, disabled, aliased, or provisioned with public keys even before they start writing memories.
+When loading a binary chain, MentisDB peeks at the first thought's `schema_version` field to determine the chain's version before deserializing the full record set. A bincode empty-Vec fast-path guard ensures that V0 chains (which lack the `schema_version` field entirely) are detected correctly: if deserialization succeeds but the resulting `schema_version` is 0 and the binary data is non-empty, the system recognizes it as a legacy chain and applies the appropriate migration path.
 
-### 4. Query, Replay, and Export
+### 3.3 Migration Paths
 
-The chain can be:
+- **V0 to V1**: `migrate_legacy_chain_v0()` detects the actual `from_version` and rewrites the chain with explicit `schema_version`, hash chain rebuild, and agent registry sidecar creation.
+- **V1 to V2**: `migrate_v1_thoughts()` adds the `Reframe` and `Supersedes` enum variants and the `chain_key` field on `ThoughtRelation`. `LegacyThoughtRelation` (2-field: `kind`, `target_id`) is deserialized and upgraded to 3-field `ThoughtRelation` with `chain_key = None`.
+- **V2 to V3**: `migrate_v2_thoughts()` adds `valid_at` and `invalid_at` fields. `LegacyThoughtRelationV2` (3-field) is deserialized and upgraded to 5-field `ThoughtRelation` with both temporal fields defaulting to `None`. Hash chain is rebuilt after migration.
 
-- discovered
-- searched
-- filtered
-- traversed in append order
-- inspected by stable id, index, or hash
-- replayed
-- summarized
-- exported as `MEMORY.md`
-- served over MCP
-- served over REST
+Migrated chains are persisted on disk so subsequent opens use the native format. All migrations are idempotent -- safe to run repeatedly.
 
-This makes MentisDB usable by agents, services, dashboards, CLIs, and orchestration systems.
+### 3.4 Mixed-Schema Chain Handling
 
-In practice, that also means a daemon can tell a caller:
+The daemon startup sequence:
 
-- which chain keys already exist
-- which distinct agents are writing to a shared chain
-- what the full registry metadata says about those agents
-- which schema version each chain uses
-- which storage adapter each chain uses
+1. Scans discovered chains for their schema version
+2. Migrates legacy chains to the current schema
+3. Reconciles older active files into the configured default storage adapter
+4. Attempts repair when the expected active file is missing or invalid but another valid local source exists
+5. Migrates the skill registry from V1 to V2 format if needed (idempotent)
+6. Migrates chain relations from V2 to V3 format to add temporal edge validity (idempotent)
 
-That makes shared brains easier to inspect and safer to reuse across teams of
-agents.
+After migration, a chain registry records each chain's schema version, storage adapter, thought count, and agent count.
 
-Replay is now more explicit than a generic "read everything again" model.
-Operators and agents can distinguish:
+## 4. Semantic Memory Model
 
-- `head`: the newest thought at the current chain tip
-- `genesis`: the first thought in the append-only ledger
-- direct lookup: resolve one thought by stable `id`, `index`, or `hash`
-- ordered traversal: move `forward` or `backward` in chunks from an anchor
-- graph/context traversal: follow `refs` and typed relations to connected thoughts
+### 4.1 ThoughtType (30 Variants)
 
-That distinction matters. Sequential chain traversal answers "what came before
-or after this thought in append order?" Graph/context traversal answers "what
-other thoughts are semantically or causally linked to this one?"
+`ThoughtType` classifies what a memory means:
 
-### 5. Swappable Storage
+| Category | Variants |
+|----------|----------|
+| User/relationship | `PreferenceUpdate`, `UserTrait`, `RelationshipUpdate` |
+| Observation | `Finding`, `Insight`, `FactLearned`, `PatternDetected`, `Hypothesis`, `Surprise` |
+| Error/correction | `Mistake`, `Correction`, `LessonLearned`, `AssumptionInvalidated`, `Reframe` |
+| Planning | `Constraint`, `Plan`, `Subgoal`, `Goal`, `Decision`, `StrategyShift` |
+| Exploration | `Wonder`, `Question`, `Idea`, `Experiment` |
+| Execution | `ActionTaken`, `TaskComplete` |
+| State | `Checkpoint`, `StateSnapshot`, `Handoff`, `Summary` |
 
-MentisDB now separates the chain model from the storage backend.
+New variants are always appended at the end of the enum because bincode encodes variants by integer index; inserting mid-enum would corrupt persisted data.
 
-- A `StorageAdapter` interface handles persistence.
-- A `BinaryStorageAdapter` provides the current default implementation.
-- A `JsonlStorageAdapter` remains available as a line-oriented, inspectable format.
-- Additional adapters can be added without changing the core memory model.
+### 4.2 ThoughtRole (8 Values)
 
-This keeps the system simple today while allowing more efficient storage engines in the future.
+`ThoughtRole` classifies how the system uses a memory:
 
-### 6. Versioned Schemas And Migration
+| Role | Semantics |
+|------|-----------|
+| `Memory` | Durable long-term memory (default) |
+| `WorkingMemory` | Shorter-lived or speculative working memory |
+| `Summary` | Synthesized summary |
+| `Compression` | Emitted during context compression |
+| `Checkpoint` | Resumption checkpoint |
+| `Handoff` | Context handed to another actor |
+| `Audit` | Traceability or audit log |
+| `Retrospective` | Deliberate post-incident reflection |
 
-MentisDB schemas are versioned.
+The type/role separation avoids mixing semantics with workflow mechanics. A hard-won fix might be stored as `Mistake` / `Correction` / `LessonLearned` (type) with role `Retrospective`, letting future agents retrieve not just what happened, but what they should do differently next time.
 
-- schema version `0` was the original format
-- schema version `1` adds explicit versioning and optional signing metadata
-- daemon startup can migrate discovered legacy chains before serving traffic
-- startup can reconcile older active files into the configured default storage adapter
-- startup can attempt repair when the expected active file is missing or invalid but another valid local source exists
+### 4.3 ThoughtRelationKind (11 Values)
 
-This matters because append-only memory still evolves. A durable memory system needs a way to add fields, change attribution strategy, and improve integrity without abandoning existing chains.
+| Kind | Semantics |
+|------|-----------|
+| `References` | General back-reference |
+| `Summarizes` | Source summarizes target |
+| `Corrects` | Source corrects target's factual error |
+| `Invalidates` | Source invalidates target (correct but stale) |
+| `CausedBy` | Source was caused by target |
+| `Supports` | Source supports target's claim |
+| `Contradicts` | Source contradicts target |
+| `DerivedFrom` | Source was derived from target |
+| `ContinuesFrom` | Source continues work from target |
+| `RelatedTo` | Generic semantic connection |
+| `Supersedes` | Source replaces target's framing (not an error; use `Reframe` as type) |
 
-The daemon also maintains a MentisDB registry so callers and operators can quickly inspect:
+`Supersedes` is particularly important for deduplication and temporal fact management: it marks a thought as replacing a prior thought without the prior being a clear error.
 
-- what chains exist
-- which schema version each chain uses
-- which storage adapter each chain uses
-- where each chain is stored
-- how many thoughts and registered agents each chain currently has
+### 4.4 Temporal Edge Validity
 
-### 7. Skill Registry
+Schema V3 adds `valid_at` and `invalid_at` to `ThoughtRelation`:
 
-Beyond remembering what happened, agents benefit from remembering how to act. MentisDB ships a versioned skill registry as a first-class primitive, not an afterthought.
+- `valid_at`: when the relation became valid (auto-set to `now` on append if not provided)
+- `invalid_at`: when the relation stopped being valid
 
-A skill is a structured document — authored in Markdown or JSON — that describes a reusable capability: how to use a tool, operate a protocol, or apply a domain pattern. Skills are uploaded by agents, assigned a stable `skill_id`, and versioned immutably. The registry exposes full lifecycle operations: upload, list, search, read, deprecate, and revoke — all available through the library API, the MCP surface, and the REST surface.
+Edges without temporal bounds are always included. The `as_of` parameter on `RankedSearchQuery` restricts graph expansion to only edges whose validity window covers the given timestamp, enabling queries like "what did the agent know at the start of the sprint?"
 
-#### Delta Versioning
+### 4.5 Invalidated Thought IDs
 
-AI agents iteratively improve their skills over time. Storing a full copy of every skill version is wasteful at scale; the natural model is delta storage — recording only what changed between consecutive versions, much as version control systems do.
+At chain open time, MentisDB builds `invalidated_thought_ids: HashSet<Uuid>` from all `Supersedes`, `Corrects`, and `Invalidates` relations. This provides O(1) superseded detection during retrieval -- ranked search skips superseded thoughts in constant time without walking the full relation graph.
 
-The first version of any skill is always stored in full. Every subsequent upload produces a unified diff patch via `diffy::create_patch` that captures only the changed lines. The content hash for each version is computed over the full reconstructed content, so integrity checks are independent of the storage representation. A caller verifying a version hash does not need to know whether the underlying record is a full snapshot or a patch.
+## 5. Storage Layer
 
-To read an older version, MentisDB applies the patch chain sequentially from v0 forward. Every historical version is equally accessible; the cost is O(n) patch applications to reach version n.
+### 5.1 StorageAdapter Trait
 
-This design makes a deliberate tradeoff: reconstruction cost grows linearly with version history depth. A practical future optimization is to introduce periodic full-content snapshots at configurable intervals — for example, every ten versions — so that reconstruction always starts from a nearby anchor rather than the original. The interface remains unchanged; the snapshot strategy is an internal storage concern.
+```rust
+pub trait StorageAdapter: Send + Sync {
+    fn load_thoughts(&self) -> io::Result<Vec<Thought>>;
+    fn append_thought(&self, thought: &Thought) -> io::Result<()>;
+    fn flush(&self) -> io::Result<()>;
+    fn set_auto_flush(&self, auto_flush: bool) -> io::Result<()>;
+    fn storage_location(&self) -> String;
+    fn storage_kind(&self) -> StorageAdapterKind;
+    fn storage_path(&self) -> Option<&Path>;
+}
+```
 
-The result is an audit-friendly record of how a skill evolved: nothing is silently rewritten, the full provenance of any version is recoverable, and the storage footprint for frequently revised skills stays proportional to the change surface rather than the total content.
+### 5.2 BinaryStorageAdapter
 
-## Data Model
+The default and only supported backend for new chains. Each record is a length-prefixed bincode-serialized `Thought`:
 
-MentisDB deliberately separates memory creation, memory storage, and memory retrieval.
+```
+[4-byte LE length][bincode-encoded Thought][4-byte LE length][bincode-encoded Thought]...
+```
 
-### ThoughtInput
+File extension: `.tcbin`.
 
-`ThoughtInput` is the caller-authored memory proposal.
+Write buffering modes:
 
-It contains the semantic payload:
+- **Strict** (`auto_flush = true`, default): appends are queued to a dedicated background writer; the caller blocks until the writer flushes to the OS. Concurrent requests share a short group-commit window (configurable via `MENTISDB_GROUP_COMMIT_MS`, default 2ms), preserving durable-ack semantics while reducing contention.
+- **Buffered** (`auto_flush = false`): appends are handed to a bounded background-writer queue. The worker batches records and flushes every 16 entries (`FLUSH_THRESHOLD`). Up to 15 thoughts may be lost on a hard crash, but write throughput increases significantly for multi-agent hubs with many concurrent writers.
 
-- the thought content
-- the thought type
-- the thought role
-- tags and concepts
-- confidence and importance
-- references and semantic relations
-- optional session metadata
-- optional agent profile hints used to populate or update the registry
-- optional signing metadata
+### 5.3 Legacy JSONL Adapter
 
-It does not contain the final chain-managed fields such as index, timestamp, or hashes.
+`LegacyJsonlReadAdapter` is a read-only adapter for migrating legacy `.jsonl` chains. It cannot be used for new chains. The `StorageAdapterKind::Jsonl` variant is retained in the registry schema for backward compatibility.
 
-This is important because an agent should be able to say what memory it wants to record, but it should not directly forge the chain mechanics that make the ledger trustworthy.
+### 5.4 File Layout
 
-### Thought
+```
+~/.mentisdb/
+  mentisdb-registry.json          # chain registry (keys, versions, counts)
+  mentisdb-skills.bin             # skill registry (binary)
+  <chain-key>.tcbin               # binary thought chain
+  <chain-key>.agents.json         # per-chain agent registry sidecar
+  <chain-key>.vectors.bin         # vector sidecar (optional, per embedding provider)
+  tls/
+    cert.pem
+    key.pem
+```
 
-`Thought` is the committed durable record written into the chain.
+## 6. Query & Retrieval
 
-MentisDB derives it from a `ThoughtInput` and adds the system-managed fields:
+MentisDB separates filter-first baseline search from scored ranked retrieval.
 
-- `schema_version`
-- `id`
-- `index`
-- `timestamp`
-- `agent_id`
-- optional `signing_key_id`
-- optional `thought_signature`
-- `prev_hash`
-- `hash`
+### 6.1 Baseline Search (ThoughtQuery)
 
-This prevents confusion between proposed memory content and accepted memory state.
+`ThoughtQuery` / `POST /v1/search` / `mentisdb_search`:
 
-Those same fields are also the stable anchors for retrieval and replay:
+- Indexed filters narrow candidates by `thought_type`, `role`, `agent_id`, tags, and concepts
+- `text` is a case-insensitive substring match over content, agent metadata, tags, and concepts
+- Results return in append order
+- `limit` keeps the newest matching tail after filtering (not ranked)
 
-- `id` is the durable identity for direct lookup
-- `index` is the total append-order position in the chain
-- `hash` is the integrity fingerprint and an alternate lookup anchor
+This path is deterministic and explainable. It is not BM25, hybrid, or vector retrieval.
 
-### ThoughtType And ThoughtRole
+### 6.2 Ranked Search (RankedSearchQuery)
 
-These two concepts are intentionally different.
+`RankedSearchQuery` / `POST /v1/ranked-search` / `mentisdb_ranked_search`:
 
-- `ThoughtType` describes what the memory means
-- `ThoughtRole` describes how the system is using that memory
+```rust
+let ranked = RankedSearchQuery::new()
+    .with_filter(ThoughtQuery::new().with_types(vec![ThoughtType::Decision]))
+    .with_text("latency ranking")
+    .with_graph(RankedSearchGraph::new().with_max_depth(1))
+    .with_as_of("2025-06-01T00:00:00Z")
+    .with_scope(MemoryScope::Session)
+    .with_limit(10);
+```
 
-For example:
+Backend selection:
 
-- `Decision` is a thought type
-- `Checkpoint` is usually a thought role
-- `LessonLearned` is a thought type
-- `Retrospective` is a thought role
+| Condition | Backend |
+|-----------|---------|
+| Non-empty `text`, no vector sidecar | `Lexical` |
+| Non-empty `text`, vector sidecar active | `Hybrid` |
+| Non-empty `text`, graph enabled, no vector | `LexicalGraph` |
+| Non-empty `text`, graph enabled, vector active | `HybridGraph` |
+| Absent/blank `text` | `Heuristic` |
 
-That separation avoids mixing semantics with workflow mechanics.
+### 6.3 BM25 Lexical Scoring
 
-This distinction is especially useful for reflective agent loops. A hard-won
-fix might be stored as:
+The lexical tokenizer applies Porter stemming before indexing and querying so word variants share a common root (`prefers`/`preferred`/`preferences` all map to `prefer`). BM25 document-frequency cutoff: terms appearing in more than 30% of documents (when corpus size >= 20) are skipped during scoring, filtering non-discriminative entity names without blanket stopword removal.
 
-- `Mistake`
-- `Correction`
-- `LessonLearned`
+### 6.4 Vector-Lexical Fusion
 
-with the final distilled guidance marked using the `Retrospective` role. That
-lets future agents retrieve not just what happened, but what they should do
-differently next time.
+When a managed vector sidecar (e.g., `fastembed-minilm` via ONNX) is active, ranked search blends lexical and semantic signals using smooth exponential decay:
 
-### ThoughtQuery
+```
+vector_score * (1 + 35 * exp(-lexical_score / 3.0))
+```
 
-`ThoughtQuery` is the read-side filter over committed thoughts.
+Pure-semantic matches receive ~36x amplification. By `lexical = 3.0` the boost has decayed to ~12x. At `lexical = 6.0` it is additive. This eliminates the discontinuities of earlier step-function boost tiers.
 
-It does not create memories and it does not modify the chain. It simply retrieves relevant thoughts by type, role, agent identity, text, tags, concepts, importance, confidence, and time range.
+### 6.5 Graph-Aware Expansion
 
-`ThoughtQuery` is about filtering, not pagination. Ordered replay is a separate
-operation: traversal walks the append-only ledger forward or backward, in
-chunks, while optionally applying the same filters that a query uses.
+When `graph` is enabled, expansion starts from lexical seed hits and walks `refs` and typed `relations` bidirectionally. Graph-expanded hits expose:
 
-## Use Cases
+- `graph_distance` (hops from seed)
+- `graph_seed_paths` (which seeds led here)
+- `graph_relation_kinds` (which relation types were traversed)
+- `graph_path` (full traversal provenance)
 
-### Long-Term Agent Memory
+`MAX_GRAPH_SEEDS = 20` bounds BFS cost. Relation-kind boosts: `ContinuesFrom` = 0.30, `Corrects`/`Invalidates` = 0.25, `Supersedes` = 0.22, `DerivedFrom` = 0.20. Graph proximity score = 1.0 / depth.
 
-A persistent agent can return days or weeks later and recover the important facts, preferences, constraints, and ongoing plans that matter for continuing work.
+### 6.6 Session Cohesion Scoring
 
-### Multi-Agent Handoff
+Thoughts within +/-8 positions of a high-scoring lexical seed (score >= 3.0) receive a proximity boost up to 0.8, decaying linearly with distance. This surfaces evidence turns adjacent to the matching turn but sharing no lexical terms. Seeds with `lexical >= 5.0` are excluded from the boost (strong enough to stand alone).
 
-One agent can shut down and hand work to another. A planning agent can hand off to an implementation agent. A coding agent can hand off to a debugging agent. A generalist can hand off to a specialist with different tools or cognitive strengths.
+### 6.7 Importance Weighting
 
-The receiving agent does not need the full conversation transcript. It can reconstruct the relevant state from the MentisDB.
+Replaces flat multipliers with differential boost proportional to lexical score:
 
-### Team Coordination
+```
+lexical_score * (importance - 0.5) * 0.3
+```
 
-When multiple agents collaborate, MentisDB provides a shared memory surface for:
+User-originated thoughts (`importance` ~0.8) outrank verbose assistant responses (`importance` ~0.2) in close BM25 races.
 
-- discoveries
-- decisions
-- mistakes
-- lessons learned
-- checkpoints
-- handoff markers
+### 6.8 As-Of Point-in-Time Queries
 
-This reduces repeated work and allows agents to build on each other’s progress.
+`RankedSearchQuery::with_as_of(rfc3339)` restricts graph expansion to only relation edges whose `valid_at`/`invalid_at` window covers the given timestamp. Thoughts appended after the `as_of` timestamp are excluded. Thoughts superseded by thoughts appended at or before the timestamp are also excluded (via `invalidated_thought_ids`).
 
-### Human Oversight
+### 6.9 Memory Scopes
 
-Operators can inspect a chain directly, query it, traverse it in chunks, browse the agent registry, or export it as Markdown. This makes it easier to understand what happened and why.
+Three visibility levels stored as `scope:{variant}` tags:
 
-The current daemon startup output also leans into operability. It prints a readable catalog of every HTTP endpoint it serves, followed by a summary of every registered chain and the known agents in each chain, including per-agent thought counts and descriptions. That is a small but important step toward a future ThoughtExplorer-style web interface.
+| Scope | Tag | Visibility |
+|-------|-----|------------|
+| `User` (default) | `scope:user` | All agents sharing the chain |
+| `Session` | `scope:session` | Current session only |
+| `Agent` | `scope:agent` | Creating agent only |
 
-## Transparency, Traceability, and Regulation
+`RankedSearchQuery::with_scope(MemoryScope)` filters results by scope. Omitting scope returns thoughts from all scopes.
 
-As agent systems become more powerful, regulation is likely to require stronger accountability. Governments and enterprises will increasingly ask:
+### 6.10 Context Bundles
 
-- What did the agent know at the time?
-- What constraints did it receive?
-- Why was a decision made?
-- What was learned after a failure?
-- Who or what changed the memory state?
+`query_context_bundles` / `mentisdb_context_bundles` returns seed-anchored grouped support context instead of a flat list. Each bundle contains one lexical seed and its supporting graph-expanded neighbors in deterministic order, making it easy for agents to understand why supporting thoughts surfaced.
 
-MentisDB is a strong primitive for answering those questions. It does not solve every governance problem, but it gives systems a durable and inspectable memory record instead of an opaque prompt history.
+### 6.11 Vector Sidecars
 
-This is useful for:
+Vector state lives in rebuildable per-chain sidecars, never in the canonical chain. Sidecars are separated by `chain_key`, `thought_id`, `thought_hash`, `model_id`, dimension, and embedding version. Changing the model or version invalidates old vector state instead of silently mixing incompatible embeddings.
 
-- internal audits
-- incident review
-- compliance workflows
-- model behavior analysis
-- regulated industries that need traceability
+Managed sidecars (registered via `manage_vector_sidecar`) stay synchronized on append. The daemon defaults to the built-in `fastembed-minilm` provider (ONNX, local, no cloud dependencies).
 
-## Anti-Tamper and Future Signing
+### 6.12 Score Breakdown
 
-The current hash chain makes memory rewrites detectable, but a sufficiently privileged malicious actor could still rewrite the full chain and recompute hashes.
+Each ranked hit includes decomposed scores:
 
-For that reason, the thought format now includes optional signing hooks:
+```json
+{
+  "score": {
+    "lexical": 2.91,
+    "vector": 0.27,
+    "graph": 0.18,
+    "relation": 0.05,
+    "seed_support": 0.0,
+    "importance": 0.0,
+    "confidence": 0.0,
+    "recency": 0.0,
+    "session_cohesion": 0.4,
+    "total": 3.14
+  },
+  "matched_terms": ["latency", "ranking"],
+  "match_sources": ["content", "tags", "agent_registry"]
+}
+```
 
-- `signing_key_id`
-- `thought_signature`
+## 7. Memory Deduplication
 
-Those fields allow a thought to carry a detached signature over the signable payload, while public verification keys can live in the agent registry.
+When `MENTISDB_DEDUP_THRESHOLD` is set (0.0-1.0), each new thought's normalized lexical tokens are compared against recent thoughts using Jaccard similarity.
 
-This is still an early foundation rather than a full trust model. The current implementation does not yet require signatures or enforce a public-key policy on thoughts, but the schema is now shaped to support Ed25519-style agent identity and stronger provenance controls.
+### 7.1 Algorithm
 
-### Cryptographic Skill Authorship
+1. Tokenize and normalize the new thought's content
+2. Scan the last `MENTISDB_DEDUP_SCAN_WINDOW` thoughts (default: 64)
+3. Compute Jaccard similarity: `|A intersection B| / |A union B|`
+4. If the best match exceeds the threshold, auto-create a `Supersedes` relation pointing to the most similar prior thought
+5. Update `invalidated_thought_ids` for O(1) exclusion in future ranked search
 
-The signing foundation described above extends naturally to the skill registry. In multi-agent systems, provenance matters: when an agent uploads a skill, that upload should be attributable not just by `agent_id` (a string) but by cryptographic proof.
+### 7.2 Configuration
 
-The agent registry serves as the PKI anchor. Agents register Ed25519 public keys via `add_agent_key`. On skill upload, if the uploading agent has active registered keys, the upload request must include a detached signature over the raw skill content along with the `key_id` identifying which key was used. The server verifies the signature against the registered public key before accepting the upload. If verification fails, the upload is rejected.
+```bash
+MENTISDB_DEDUP_THRESHOLD=0.85     # similarity threshold (0.0-1.0)
+MENTISDB_DEDUP_SCAN_WINDOW=64     # how many recent thoughts to scan
+```
 
-The trust model is progressive:
+Library API: `MentisDb::with_dedup_threshold()` and `with_dedup_scan_window()`.
 
-- **No registered keys** — signature is not required. Legacy uploads and simple integrations continue to work without modification.
-- **Active registered keys** — signature is mandatory. The agent has opted into signed provenance, and the system enforces it.
-- **Revoked keys** — upload is rejected even if the signature is technically valid. Key revocation is authoritative.
+The superseded thought is retained for audit. Ranked search simply deprioritizes it. No content is deleted or overwritten.
 
-The `key_id` and signature are stored durably on the `SkillVersion` record, enabling offline verification at any future point without querying a live server. An auditor with a copy of the agent's public key can verify the authorship of any signed skill version independently.
+## 8. CLI Subcommands
 
-This means a signed skill upload is a statement of authorship and intent — not merely attributed by a string identifier, but bound to a cryptographic identity the agent controls. A signed version cannot later be disavowed, and a revoked key cannot be used to quietly replace a legitimate version.
+`mentisdbd` provides three subcommands that talk to a running daemon via its REST endpoint (default `http://127.0.0.1:9472`):
 
-Stronger controls could include signatures from a human-controlled or centrally controlled authority that agents themselves cannot control.
+### 8.1 add
 
-That authority could:
+```bash
+mentisdbd add "The cache uses LRU eviction" \
+  --type decision \
+  --scope session \
+  --tag caching \
+  --agent planner \
+  --chain my-project \
+  --url http://127.0.0.1:9472
+```
 
-- sign checkpoints
-- anchor chain heads externally
-- validate approved memory states
-- make unauthorized rewrites detectable even if an agent has local write access
+Appends a thought to the specified chain. Defaults to `FactLearned` type and `user` scope. Uses `ureq` for synchronous HTTP (no async runtime needed).
 
-This is an important future direction for environments where agents may attempt to cover their tracks.
+### 8.2 search
 
-## Why MentisDB Matters
+```bash
+mentisdbd search "cache invalidation" \
+  --limit 5 \
+  --scope session \
+  --chain my-project \
+  --url http://127.0.0.1:9472
+```
 
-MentisDB turns agent memory from an informal prompt trick into durable infrastructure.
+Invokes the REST ranked-search endpoint and prints results with score breakdowns, matched terms, and match sources.
 
-It helps solve:
+### 8.3 agents
 
-- long-term memory
-- semantic retrieval
-- context handoff
-- multi-agent collaboration
-- transparency
-- traceability
-- tamper detection
-- durable, versioned skill provenance
+```bash
+mentisdbd agents --chain my-project --url http://127.0.0.1:9472
+```
 
-In short, MentisDB is designed to be a practical memory ledger for real agent systems.
+Lists the distinct agent identities writing to the specified chain.
 
-## Conclusion
+## 9. MCP Integration
 
-Agent systems need a better memory foundation than mutable text files, prompt stuffing, and framework-specific hidden state. MentisDB provides a simple and durable alternative: semantic memory records stored in an append-only blockchain-style chain, queryable across time and across agents, with a storage layer that can evolve without rewriting the memory model.
+`mentisdbd` exposes a standard streamable HTTP MCP endpoint at `POST /` (default port 9471) plus legacy compatibility endpoints at `POST /tools/list` and `POST /tools/execute`.
 
-It is useful today for persistent agents and multi-agent teams, and it points toward a future where agent systems can be both more capable and more accountable.
+### 9.1 Tool Catalog
 
-\
+34 MCP tools are currently exposed, covering:
+
+- **Bootstrap & append**: `mentisdb_bootstrap`, `mentisdb_append`, `mentisdb_append_retrospective`
+- **Search**: `mentisdb_search`, `mentisdb_lexical_search`, `mentisdb_ranked_search`, `mentisdb_context_bundles`
+- **Read**: `mentisdb_get_thought`, `mentisdb_get_genesis_thought`, `mentisdb_traverse_thoughts`, `mentisdb_recent_context`, `mentisdb_head`
+- **Export/import**: `mentisdb_memory_markdown`, `mentisdb_import_memory_markdown`, `mentisdb_skill_md`
+- **Agent registry**: `mentisdb_list_agents`, `mentisdb_get_agent`, `mentisdb_list_agent_registry`, `mentisdb_upsert_agent`, `mentisdb_set_agent_description`, `mentisdb_add_agent_alias`, `mentisdb_add_agent_key`, `mentisdb_revoke_agent_key`, `mentisdb_disable_agent`
+- **Chain management**: `mentisdb_list_chains`, `mentisdb_merge_chains`
+- **Skill registry**: `mentisdb_list_skills`, `mentisdb_skill_manifest`, `mentisdb_upload_skill`, `mentisdb_search_skill`, `mentisdb_read_skill`, `mentisdb_skill_versions`, `mentisdb_deprecate_skill`, `mentisdb_revoke_skill`
+
+### 9.2 Skill Registry
+
+The skill registry is a git-like immutable version store for agent instruction bundles. Skills are authored in Markdown or JSON and uploaded by agents with a stable `skill_id`. Every upload to an existing `skill_id` creates a new immutable version. The first version stores full content; subsequent versions store unified diff patches. Version reconstruction replays patches from v0 forward. Content hashes are computed over reconstructed content, making integrity checks independent of storage representation.
+
+Agents with registered Ed25519 public keys must cryptographically sign uploads. Signature verification is enforced server-side before acceptance. Agents without keys may upload without signatures for backward compatibility.
+
+### 9.3 MCP Bootstrap Flow
+
+Modern MCP clients bootstrap from the MCP handshake:
+
+1. `initialize.instructions` tells the agent to read `mentisdb://skill/core`
+2. `resources/read(mentisdb://skill/core)` delivers the embedded operating skill
+3. `mentisdb_bootstrap` creates or opens the chain and writes a checkpoint if empty
+4. `mentisdb_recent_context` loads prior state for session resumption
+
+## 10. Benchmarks
+
+### 10.1 Standard Evaluation Results
+
+| Benchmark | Metric | Score |
+|-----------|--------|-------|
+| LoCoMo 2-persona | R@10 | 88.7% |
+| LoCoMo 2-persona single-hop | R@10 | 90.7% |
+| LoCoMo 10-persona (1977 queries) | R@10 | 74.2% |
+| LongMemEval | R@5 | 67.6% |
+| LongMemEval | R@10 | 73.2% |
+
+### 10.2 Scoring Evolution
+
+| Version | Change | LongMemEval R@5 |
+|---------|--------|-----------------|
+| 0.8.0 baseline | -- | 57.2% |
+| 0.8.0 + Porter stemming | Token normalization | 61.6% |
+| 0.8.0 + tiered fusion + importance | Vector/lexical balance | 65.0% |
+| 0.8.1 + session cohesion + smooth fusion + DF cutoff | Retrieval quality | 67.6% |
+
+### 10.3 Criterion Micro-Benchmarks
+
+- `benches/thought_chain.rs` -- 10 benchmarks: append throughput, query latency, traversal
+- `benches/search_baseline.rs` -- 4 benchmarks: lexical/filter-first baselines
+- `benches/search_ranked.rs` -- 4 benchmarks: ranked retrieval, heuristic fallback
+- `benches/skill_registry.rs` -- 12 benchmarks: skill upload, search, delta reconstruction, lifecycle
+- `benches/http_concurrency.rs` -- write/read throughput at 100/1k/10k concurrent Tokio tasks (p50/p95/p99)
+
+The `DashMap` concurrent chain lookup refactor delivers 750-930 read req/s at 10k concurrent tasks, compared to the sequential bottleneck on the previous `RwLock<HashMap>`.
+
+## 11. Competitive Landscape
+
+| Feature | MentisDB | Mem0 | Graphiti/Zep | Letta/MemGPT |
+|---------|----------|------|--------------|--------------|
+| Language | Rust | Python | Python | Python/TS |
+| Storage | Embedded (file) | External DB | External DB (Neo4j/FalkorDB) | External DB |
+| LLM required for core | No | Yes | Yes | Yes |
+| Cryptographic integrity | Hash chain | No | No | No |
+| Hybrid retrieval | BM25+vec+graph | vec+keyword | semantic+kw+graph | No |
+| Temporal facts | valid_at/invalid_at (0.8.2) | Updates only | valid_at/invalid_at | No |
+| Memory dedup | Jaccard similarity | LLM-based | Merge | No |
+| Agent registry | Yes | No | No | Yes |
+| MCP server | Built-in | No | Yes | No |
+| CLI tool | add/search/agents | Yes | No | Yes |
+
+**MentisDB's differentiators**: the only system that combines embedded storage, no LLM dependency, cryptographic integrity, and hybrid BM25+vector+graph retrieval in a single static binary. Competitors require external databases and LLM API keys for core ingestion. MentisDB works offline, in air-gapped environments, and at scale without external infrastructure.
+
+**Gaps**: custom entity/relation ontologies (Graphiti's Pydantic models), LLM-extracted memories (Mem0/Graphiti), browser extension (Mem0), and token tracking.
+
+## 12. Future Direction
+
+### 0.8.3 -- Retrieval Quality
+
+- **Irregular verb lemmas**: extend the Porter stemmer with a lookup table for common irregular verbs (`ran`/`run`, `went`/`go`) to improve recall on conversational phrasing
+- **RRF (Reciprocal Rank Fusion) reranking**: blend lexical and vector rank positions using RRF instead of the current score-level fusion, providing more robust cross-signal combination
+- **Per-field BM25 DF cutoffs**: apply document-frequency filtering independently per indexed field (content vs. tags vs. concepts vs. agent metadata) instead of a single corpus-wide threshold
+
+### 0.8.4 -- Ontology & Provenance
+
+- Custom entity/relation types per chain
+- Episode provenance tracking from derived facts back to source conversations
+
+### 0.9.0 -- Ecosystem
+
+- Cross-chain queries
+- Optional LLM-extracted memories
+- LangChain integration
+- Webhooks
+
+### 1.0.0 -- Production Stable
+
+- Browser extension
+- Self-improving agent primitives
+- Token tracking
+- API stability guarantees
+
+---
+
 **Angel Leon**
