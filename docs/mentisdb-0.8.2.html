@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.4rem; margin-top: 2rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; }
+    a { color: #4361ee; }
+    code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    pre { background: #f0f0f0; padding: 1rem; border-radius: 5px; overflow-x: auto; margin-bottom: 1rem; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: #f5f5f5; font-weight: 600; }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.25rem; }
+    hr { border: none; border-top: 1px solid #e0e0e0; margin: 2rem 0; }
+    blockquote { border-left: 3px solid #4361ee; padding-left: 1rem; color: #555; margin-bottom: 1rem; }
+    strong { font-weight: 600; }
+    .back { margin-bottom: 2rem; font-size: 0.9rem; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    footer { border-top: 1px solid #e0e0e0; padding-top: 1.5rem; color: #888; font-size: 0.85rem; margin-top: 3rem; }
+    .highlight { background: #eef2ff; border-left: 3px solid #4361ee; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 0 4px 4px 0; }
+    .highlight p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<div class="back"><a href="index.html">&larr; Blog</a></div>
+<div class="meta">April 10, 2026</div>
+
+<h1>MentisDB 0.8.2 — Temporal Memory, Auto-Dedup, Scoped Recall, CLI</h1>
+
+<p>
+  0.8.2 closes the four biggest feature gaps we identified in our
+  <a href="competitive-analysis.html">competitive analysis</a> against Mem0, Graphiti/Zep,
+  Letta, and Cognee. Every major agentic memory system supports temporal facts, deduplication,
+  scoped visibility, or some form of CLI — and now MentisDB does too, without adding any
+  cloud dependencies, LLM calls, or schema-breaking migrations.
+</p>
+
+<h2 id="at-a-glance">At a Glance</h2>
+
+<table>
+  <thead>
+    <tr><th>Feature</th><th>What it does</th><th>Competitive match</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Temporal edge validity</td><td>Point-in-time queries, time-bounded relations</td><td>Graphiti, Mem0</td></tr>
+    <tr><td>Memory dedup/merge</td><td>Auto-Supersedes on near-duplicate append</td><td>Mem0, Cognee</td></tr>
+    <tr><td>Multi-level scopes</td><td>User / Session / Agent visibility tags</td><td>Mem0, Letta</td></tr>
+    <tr><td>CLI tool</td><td>add, search, agents via daemon REST</td><td>Zep, Cognee</td></tr>
+  </tbody>
+</table>
+
+<h2 id="temporal-edge-validity">1. Temporal Edge Validity</h2>
+
+<p>
+  Agents accumulate facts that go stale. "Alice's office is on floor 3" is true until she
+  moves to floor 7. Competitors handle this with mutable graph properties or LLM-extracted
+  temporal triples. MentisDB does it with <strong>append-only temporal relations</strong>.
+</p>
+
+<p>
+  Every <code>ThoughtRelation</code> now carries <code>valid_at</code> and
+  <code>invalid_at</code> timestamps — set explicitly when you know the time bounds, or
+  auto-set to the append time when a relation is created. The real power comes from the
+  <code>as_of</code> parameter on ranked search:
+</p>
+
+<pre><code>let query = RankedSearchQuery::new()
+    .with_text("Alice's office")
+    .with_as_of("2026-03-01T00:00:00Z".parse().unwrap());
+</code></pre>
+
+<p>
+  An <code>as_of</code> query excludes thoughts appended after the timestamp and thoughts
+  that have been superseded, corrected, or invalidated by thoughts appended at or before it.
+  The invalidated set is built once at chain open time and updated incrementally on each
+  append — O(1) lookup at query time, no LLM needed.
+</p>
+
+<p>
+  This is a <strong>schema V3</strong> change: <code>ThoughtRelation</code> expanded from
+  3 fields to 5. Existing V0, V1, and V2 chains are migrated automatically on open, with
+  full hash-chain rebuild. The migration is persisted so future opens skip it.
+</p>
+
+<div class="highlight">
+  <p>
+    <strong>Design choice:</strong> we considered auto-mutating the <code>invalid_at</code>
+    field on prior thoughts when a Supersedes/Corrects relation is appended. That would
+    break the append-only hash chain. Instead, temporal invalidation is purely
+    <strong>query-time</strong>: the invalidated set is computed from the relation graph,
+    never from mutated fields. This keeps every historical hash verifiable.
+  </p>
+</div>
+
+<h2 id="memory-dedup">2. Memory Deduplication</h2>
+
+<p>
+  Agents in long sessions tend to re-assert facts they've already recorded. "The sky is
+  blue" appears three times across different turns. Without dedup, all three compete for
+  retrieval slots, wasting bandwidth and diluting relevance.
+</p>
+
+<p>
+  Set <code>MENTISDB_DEDUP_THRESHOLD=0.85</code> (or call
+  <code>db.with_dedup_threshold(Some(0.85))</code>) and every new thought is checked
+  against the last 64 thoughts in the chain using <strong>Jaccard similarity on
+  normalized lexical tokens</strong>. If the best match exceeds the threshold, a
+  <code>Supersedes</code> relation is automatically added pointing to the prior thought.
+</p>
+
+<pre><code># Enable auto-dedup
+MENTISDB_DEDUP_THRESHOLD=0.85
+MENTISDB_DEDUP_SCAN_WINDOW=64  # default
+</code></pre>
+
+<p>
+  The superseded thought is then filtered from search results — no LLM call, no embedding
+  comparison, no cloud dependency. Pure token-set math in microseconds.
+</p>
+
+<p>
+  Why Jaccard instead of embeddings? Two reasons: (1) it's deterministic and fast — no
+  model loading, no GPU, no variance between runs; (2) for near-exact duplicates (the
+  common case), Jaccard is more precise than cosine similarity on short texts. A threshold
+  of 0.85 catches re-statements while allowing genuine elaborations ("The sky is blue" vs
+  "The sky is blue on clear days" — Jaccard ≈ 0.57, below threshold).
+</p>
+
+<h2 id="memory-scopes">3. Multi-Level Memory Scopes</h2>
+
+<p>
+  In multi-agent systems, not every memory should be visible to every agent. A session-scoped
+  scratchpad shouldn't pollute a user's long-term recall. An agent's private strategy notes
+  shouldn't leak to other agents on the same chain.
+</p>
+
+<p>
+  MentisDB 0.8.2 introduces <code>MemoryScope</code> — three visibility levels stored as
+  tags on thoughts:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Scope</th><th>Tag</th><th>Visible to</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>User</code> (default)</td><td><code>scope:user</code></td><td>All agents sharing the same user identity</td></tr>
+    <tr><td><code>Session</code></td><td><code>scope:session</code></td><td>Only the session that created it</td></tr>
+    <tr><td><code>Agent</code></td><td><code>scope:agent</code></td><td>Only the agent that created it</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Scopes are stored as tags, not as a new struct field. This was a deliberate choice: adding
+  a field to <code>Thought</code> would require schema V4 and another migration round. Tags
+  already exist, already participate in search filtering, and the <code>scope:</code> prefix
+  convention is easy to audit. A helper method makes it seamless:
+</p>
+
+<pre><code>let input = ThoughtInput::new(ThoughtType::FactLearned, "Draft hypothesis")
+    .with_scope(MemoryScope::Session);
+
+let query = RankedSearchQuery::new()
+    .with_text("hypothesis")
+    .with_scope(MemoryScope::Session);
+</code></pre>
+
+<p>
+  The REST API accepts <code>"scope": "session"</code> on both append and search. The MCP
+  surface passes it through tags as well.
+</p>
+
+<h2 id="cli-tool">4. CLI Tool</h2>
+
+<p>
+  Until now, the only way to interact with MentisDB outside of an agent session was the
+  web dashboard. 0.8.2 adds three CLI subcommands that talk to a running daemon via REST:
+</p>
+
+<pre><code># Add a thought
+mentisdbd add "The database uses schema V3" --type fact-learned --tag architecture
+
+# Search
+mentisdbd search "schema version" --limit 5 --scope user
+
+# List agents
+mentisdbd agents --chain my-project
+</code></pre>
+
+<p>
+  The CLI uses <code>ureq</code> for synchronous HTTP — no async runtime, no Tokio
+  dependency, no startup latency. It connects to the daemon's REST port (default
+  <code>http://127.0.0.1:9472</code>) and returns JSON output.
+</p>
+
+<p>
+  This is especially useful for quick inspection, debugging, and scripting. Combined with
+  <code>jq</code>, you can pipe search results into shell pipelines:
+</p>
+
+<pre><code>mentisdbd search "deployment" --limit 20 | jq '.hits[].thought.content'
+</code></pre>
+
+<h2 id="migration-safety">Migration Safety</h2>
+
+<p>
+  0.8.2 includes the third schema migration in MentisDB's history (V0 → V1 → V2 → V3).
+  Each migration has taught us something:
+</p>
+
+<ul>
+  <li>
+    <strong>V0 → V1:</strong> added <code>chain_key</code> to ThoughtRelation for
+    cross-chain references.
+  </li>
+  <li>
+    <strong>V1 → V2:</strong> schema version constant introduced; migration framework
+    established.
+  </li>
+  <li>
+    <strong>V2 → V3:</strong> added <code>valid_at</code>/<code>invalid_at</code> to
+    ThoughtRelation.
+  </li>
+</ul>
+
+<p>
+  The key lesson from V3: <strong>bincode's empty-Vec fast path is a trap</strong>. When
+  a Rust struct has <code>Vec&lt;T&gt;</code> and the serialized data has 0 items, bincode
+  can successfully deserialize even if T's layout changed between schema versions. The
+  deserializer reads length=0, skips the element loop, and continues at the same byte
+  offsets — producing silently wrong data. The fix: always check
+  <code>schema_version == MENTISDB_CURRENT_VERSION</code> after a successful fast-path
+  deserialization.
+</p>
+
+<h2 id="design-philosophy">Design Philosophy</h2>
+
+<p>
+  All four features follow the same principles that distinguish MentisDB from the field:
+</p>
+
+<ol>
+  <li><strong>No LLM calls at append or query time.</strong> Dedup uses Jaccard on tokens,
+      temporal uses timestamps, scopes use tags. Every operation is deterministic and
+      O(1) or O(scan_window) at worst.</li>
+  <li><strong>Append-only integrity.</strong> Temporal invalidation is query-time only.
+      No existing thought is ever mutated. Every historical hash remains verifiable.</li>
+  <li><strong>Zero new dependencies for core features.</strong> Jaccard uses the existing
+      lexical tokenizer. Scopes use existing tags. The CLI adds <code>ureq</code> but it's
+      only needed for the CLI subcommands, not the library.</li>
+  <li><strong>Backward-compatible by default.</strong> Dedup is opt-in. Scopes default to
+      User. Temporal edges default to None. Old chains migrate transparently.</li>
+</ol>
+
+<h2 id="upgrade">Upgrade</h2>
+
+<pre><code>cargo install mentisdb
+</code></pre>
+
+<p>
+  Or from source:
+</p>
+
+<pre><code>git pull
+cargo install --path . --locked
+</code></pre>
+
+<p>
+  Existing chains (V0, V1, V2) are migrated to V3 automatically on first open. The
+  migration persists so subsequent opens are instant. Vector sidecars and skill registries
+  are unaffected.
+</p>
+
+<p>
+  To enable dedup, set the environment variable before starting the daemon:
+</p>
+
+<pre><code>MENTISDB_DEDUP_THRESHOLD=0.85 mentisdbd
+</code></pre>
+
+<h2 id="whats-next">What's Next</h2>
+
+<p>
+  0.8.3 will focus on retrieval quality: irregular verb lemma expansion ("went" → "go"),
+  lightweight reranking, and per-field BM25 DF cutoffs. These address the
+  <a href="mentisdb-0.8.1.html">stemming gap</a> that accounts for ~38% of remaining
+  LoCoMo misses. Beyond that: custom ontology support and episode provenance, the two
+  remaining gaps from the competitive analysis.
+</p>
+
+<hr />
+
+<p>
+  <em>MentisDB is an open-source durable memory layer for AI agents. It stores
+  memories in an append-only hash-chained log, retrieves them with hybrid
+  lexical+semantic+graph search, and runs entirely locally with no cloud
+  dependencies.
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">Website</a></em>
+</p>
+
+<footer>
+  <a href="https://github.com/CloudLLM-ai/mentisdb">GitHub</a> &middot;
+  <a href="https://docs.mentisdb.com">Docs</a> &middot;
+  <a href="https://mentisdb.com">mentisdb.com</a>
+</footer>
+</body>
+</html>
