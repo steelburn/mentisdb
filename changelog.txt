@@ -1,3 +1,23 @@
+0.8.4.30 APR/11/2026
+  - fix(updater): move update check before chain migrations
+    - Users who couldn't open mentisdb after upgrading were stuck because
+      the update check ran AFTER migrations, which crashed on the old binary.
+      Now the update check runs FIRST, giving users the fix before their
+      chains are touched.
+    - If an update is found and accepted, mentisdbd exits with instructions
+      to restart. No automatic in-process restart — simpler and safer.
+  - feat(cli): add `mentisdbd update` and `mentisdbd force-update` subcommands
+    - `mentisdbd update` checks for a newer release and prompts y/N to install
+    - `mentisdbd force-update` installs the latest release unconditionally,
+      even if the current version appears up to date — useful for repairing
+      a corrupted binary or forcing a fresh install
+    - Both use the same cargo install path as the startup update check
+  - refactor(updater): remove async update check task and restart channel
+    - The update check now runs synchronously before migrations instead of
+      in a background tokio task after servers start
+    - Removed dead code: run_update_check_task(), RestartRequest,
+      shutdown_all_servers(), restart_installed_binary()
+
 0.8.3.29 APR/10/2026
   - fix(migration): per-thought schema detection for mixed-schema binary chains
     - Users upgrading from 0.8.1 to 0.8.2 encountered a crash when opening existing

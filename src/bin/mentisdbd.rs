@@ -46,7 +46,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 #[cfg(feature = "startup-sound")]
 use std::sync::{Mutex, OnceLock};
-use tokio::sync::{mpsc, oneshot};
 
 /// Raise the open-file-descriptor limit to the OS hard cap (up to 65 535).
 ///
@@ -116,13 +115,6 @@ pub(crate) struct UpdateConfig {
 struct UpdateRelease {
     tag_name: String,
     html_url: String,
-}
-
-#[derive(Debug)]
-struct RestartRequest {
-    exe_path: PathBuf,
-    args: Vec<OsString>,
-    release_tag: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -699,153 +691,6 @@ async fn fetch_latest_release(
     })
 }
 
-fn shutdown_all_servers(
-    handles: &mut MentisDbServerHandles,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    handles.mcp.shutdown()?;
-    handles.rest.shutdown()?;
-    if let Some(handle) = handles.https_mcp.as_mut() {
-        let _ = handle.shutdown();
-    }
-    if let Some(handle) = handles.https_rest.as_mut() {
-        let _ = handle.shutdown();
-    }
-    if let Some(handle) = handles.dashboard.as_mut() {
-        let _ = handle.shutdown();
-    }
-    Ok(())
-}
-
-fn restart_installed_binary(
-    request: &RestartRequest,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // exec() replaces the current process image in-place (same PID, same
-        // terminal session) so the new binary inherits the controlling terminal
-        // without receiving SIGHUP.
-        let exec_err = Command::new(&request.exe_path).args(&request.args).exec();
-        // exec() only returns if it failed. Log prominently, then fall back to
-        // spawn() so the update is not silently lost.
-        eprintln!(
-            "mentisdbd: exec({}) failed: {exec_err}; falling back to spawn",
-            request.exe_path.display()
-        );
-        Command::new(&request.exe_path)
-            .args(&request.args)
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "spawn fallback also failed for {}: {e}",
-                    request.exe_path.display()
-                )
-            })?;
-        // Force-exit the old process so the child can own the ports and the
-        // terminal. We've already shut down all servers above.
-        std::process::exit(0);
-    }
-    #[cfg(not(unix))]
-    {
-        Command::new(&request.exe_path)
-            .args(&request.args)
-            .spawn()?;
-        Ok(())
-    }
-}
-
-async fn run_update_check_task(
-    config: UpdateConfig,
-    restart_tx: mpsc::UnboundedSender<RestartRequest>,
-    startup_ready: oneshot::Receiver<()>,
-) {
-    let latest = match fetch_latest_release(&config.repo).await {
-        Ok(latest) => latest,
-        Err(error) => {
-            let _ = startup_ready.await;
-            println!("Update check failed: {error}");
-            return;
-        }
-    };
-    let _ = startup_ready.await;
-
-    let current_version = env!("CARGO_PKG_VERSION");
-    if !release_tag_is_newer(&latest.tag_name, current_version) {
-        println!(
-            "Update check: mentisdbd is up to date (current {}, latest {}).",
-            current_version,
-            normalize_release_tag_display(&latest.tag_name)
-        );
-        return;
-    }
-
-    let latest_display = normalize_release_tag_display(&latest.tag_name);
-    let dialog_lines =
-        build_update_available_lines(current_version, &latest_display, &latest.html_url);
-    ascii_notice_box("mentisdbd update available", &dialog_lines);
-
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        println!(
-            "Update check: non-interactive terminal detected; skipping prompt. \
-Run `cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}` to update manually.",
-            config.repo,
-            latest.tag_name
-        );
-        return;
-    }
-
-    let should_update = match tokio::task::spawn_blocking(move || prompt_yes_no("Selection")).await
-    {
-        Ok(Ok(approved)) => approved,
-        Ok(Err(error)) => {
-            println!("Update prompt failed: {error}");
-            return;
-        }
-        Err(error) => {
-            println!("Update prompt failed: {error}");
-            return;
-        }
-    };
-
-    if !should_update {
-        println!("Update check: skipped update to {latest_display}.");
-        return;
-    }
-
-    println!("Installing release {} via cargo...", latest_display);
-    let restart_request = match tokio::task::spawn_blocking({
-        let tag_name = latest.tag_name.clone();
-        let repo = config.repo.clone();
-        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-        move || -> Result<RestartRequest, Box<dyn std::error::Error + Send + Sync>> {
-            let exe_path = install_latest_release(&tag_name, &repo)?;
-            Ok(RestartRequest {
-                exe_path,
-                args,
-                release_tag: tag_name,
-            })
-        }
-    })
-    .await
-    {
-        Ok(Ok(request)) => request,
-        Ok(Err(error)) => {
-            println!("Update install failed: {error}");
-            return;
-        }
-        Err(error) => {
-            println!("Update install failed: {error}");
-            return;
-        }
-    };
-
-    if restart_tx.send(restart_request).is_err() {
-        println!(
-            "Update installed, but restart signaling failed. Please restart mentisdbd manually."
-        );
-    }
-}
-
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // When the server feature is enabled, axum-server (tls-rustls) and reqwest
     // both pull in rustls.  Depending on the feature combination, both the
@@ -863,6 +708,59 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
     let mut config = MentisDbServerConfig::from_env();
+
+    // Run update check BEFORE migrations so users get the fix before their
+    // chains are touched by an older binary that might crash on migration.
+    let update_config = update_config_from_env();
+    if update_config.enabled {
+        let latest = fetch_latest_release(&update_config.repo).await;
+        match latest {
+            Ok(ref release)
+                if release_tag_is_newer(&release.tag_name, env!("CARGO_PKG_VERSION")) =>
+            {
+                let latest_display = normalize_release_tag_display(&release.tag_name);
+                let current_version = env!("CARGO_PKG_VERSION");
+                let dialog_lines = build_update_available_lines(
+                    current_version,
+                    &latest_display,
+                    &release.html_url,
+                );
+                ascii_notice_box("mentisdbd update available", &dialog_lines);
+                if io::stdin().is_terminal() && io::stdout().is_terminal() {
+                    match prompt_yes_no("Selection") {
+                        Ok(true) => {
+                            println!("Installing release {} via cargo…", latest_display);
+                            match install_latest_release(&release.tag_name, &update_config.repo) {
+                                Ok(path) => {
+                                    println!("Installed mentisdbd to {}", path.display());
+                                    println!("Please restart mentisdbd to use the new version.");
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    eprintln!("Install failed: {e}");
+                                    eprintln!("Continuing with current version…");
+                                }
+                            }
+                        }
+                        Ok(false) => println!("Update skipped. Continuing with current version…"),
+                        Err(e) => {
+                            eprintln!("Prompt failed: {e}");
+                            eprintln!("Continuing with current version…");
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Non-interactive terminal. Update manually:\n\
+                         cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
+                        update_config.repo, release.tag_name
+                    );
+                    eprintln!("Continuing with current version…");
+                }
+            }
+            Ok(_) => {} // up to date
+            Err(e) => log::warn!("Update check failed: {e}"),
+        }
+    }
 
     // Run migrations before starting servers.  Progress lines print live here
     // (rare — only on first run or version upgrades).
@@ -993,15 +891,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let mut handles = start_servers(config.clone()).await?;
-    let update_config = update_config_from_env();
-    let (restart_tx, mut restart_rx) = mpsc::unbounded_channel::<RestartRequest>();
-    let mut startup_ready_tx = None;
-    if update_config.enabled {
-        let (tx, rx) = oneshot::channel::<()>();
-        startup_ready_tx = Some(tx);
-        tokio::spawn(run_update_check_task(update_config.clone(), restart_tx, rx));
-    }
+    let handles = start_servers(config.clone()).await?;
 
     // ── Useful info first ────────────────────────────────────────────────────
     print_endpoint_catalog(&handles);
@@ -1227,32 +1117,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         eprintln!("Startup setup wizard failed: {error}");
     }
 
-    if let Some(tx) = startup_ready_tx.take() {
-        let _ = tx.send(());
-    }
-
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        restart = async {
-            match restart_rx.recv().await {
-                Some(request) => request,
-                None => std::future::pending::<RestartRequest>().await,
-            }
-        }, if update_config.enabled => {
-            println!(
-                "Update installed: restarting mentisdbd with release {}...",
-                normalize_release_tag_display(&restart.release_tag)
-            );
-            // Shut down listeners so the new process can bind the same ports.
-            // Treat shutdown errors as warnings — a partially shut-down server
-            // is still better than aborting the restart entirely.
-            if let Err(e) = shutdown_all_servers(&mut handles) {
-                eprintln!("mentisdbd: warning — server shutdown error during restart: {e}");
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            restart_installed_binary(&restart)?;
-            return Ok(());
-        }
     }
     Ok(())
 }
@@ -1264,6 +1130,8 @@ mentisdbd daemon
 Usage:
   mentisdbd
   mentisdbd --help
+  mentisdbd update
+  mentisdbd force-update
   mentisdbd setup <agent|all> [--url <url>] [--dry-run]
   mentisdbd wizard [--url <url>] [--yes]
   mentisdbd add <content> [--type <type>] [--scope <scope>] [--tag <tag>] [--agent <id>] [--chain <key>] [--url <url>]
@@ -1272,6 +1140,17 @@ Usage:
 
 Role:
   Start the MentisDB MCP server, REST server, and web dashboard.
+
+Update subcommands:
+  update
+    Check for a newer mentisdb release and prompt to install it.
+    If a newer version is found, asks y/N before running cargo install.
+    The daemon checks for updates on startup before migrating chains.
+
+  force-update
+    Install the latest mentisdb release unconditionally, even if the
+    current version appears to be the same or newer. Useful for
+    reinstalling a corrupted binary or forcing a fresh install.
 
 Setup and onboarding subcommands:
   setup
@@ -1413,6 +1292,8 @@ Examples:
 pub(crate) enum DaemonArgMode {
     Help,
     Run,
+    Update,
+    ForceUpdate,
     CliSubcommand(Vec<OsString>),
 }
 
@@ -1439,6 +1320,14 @@ where
         let mut command = vec![OsString::from("mentisdbd")];
         command.extend(args);
         return Ok(DaemonArgMode::CliSubcommand(command));
+    }
+
+    if args.len() == 1 && matches!(first.as_ref(), "update" | "force-update") {
+        return if first.as_ref() == "update" {
+            Ok(DaemonArgMode::Update)
+        } else {
+            Ok(DaemonArgMode::ForceUpdate)
+        };
     }
 
     Err(format!(
@@ -1470,6 +1359,105 @@ pub(crate) fn run_cli_subcommand_with_io(
     mentisdb::cli::run_with_io(args, input, out, err)
 }
 
+fn run_update_standalone(force: bool) -> ExitCode {
+    let update_config = update_config_from_env();
+    if !update_config.enabled && !force {
+        eprintln!("Update checks are disabled (MENTISDB_UPDATE_CHECK=false).");
+        eprintln!("Use `mentisdbd force-update` to update regardless.");
+        return ExitCode::from(1);
+    }
+
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    if force {
+        println!("Force-updating mentisdbd to the latest release…");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime");
+        let latest = match rt.block_on(fetch_latest_release(&update_config.repo)) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Failed to fetch latest release: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let latest_display = normalize_release_tag_display(&latest.tag_name);
+        println!("Current: {current_version}, latest: {latest_display}");
+        println!("Installing release {latest_display} via cargo…");
+        match install_latest_release(&latest.tag_name, &update_config.repo) {
+            Ok(path) => {
+                println!("Installed mentisdbd to {}", path.display());
+                println!("Restart mentisdbd to use the new version.");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("Install failed: {e}");
+                ExitCode::from(1)
+            }
+        }
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime");
+        let latest = match rt.block_on(fetch_latest_release(&update_config.repo)) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Failed to fetch latest release: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let latest_display = normalize_release_tag_display(&latest.tag_name);
+
+        if !release_tag_is_newer(&latest.tag_name, current_version) {
+            println!(
+                "mentisdbd is up to date (current {}, latest {}).",
+                current_version, latest_display
+            );
+            return ExitCode::SUCCESS;
+        }
+
+        let dialog_lines =
+            build_update_available_lines(current_version, &latest_display, &latest.html_url);
+        ascii_notice_box("mentisdbd update available", &dialog_lines);
+
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!(
+                "Non-interactive terminal. Run manually:\n\
+                 cargo install --git https://github.com/{} --tag {} --locked --force --bin {UPDATE_BINARY_NAME} {UPDATE_CRATE_NAME}",
+                update_config.repo, latest.tag_name
+            );
+            return ExitCode::from(1);
+        }
+
+        match prompt_yes_no("Selection") {
+            Ok(true) => {}
+            Ok(false) => {
+                println!("Update skipped.");
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Prompt failed: {e}");
+                return ExitCode::from(1);
+            }
+        }
+
+        println!("Installing release {latest_display} via cargo…");
+        match install_latest_release(&latest.tag_name, &update_config.repo) {
+            Ok(path) => {
+                println!("Installed mentisdbd to {}", path.display());
+                println!("Restart mentisdbd to use the new version.");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("Install failed: {e}");
+                ExitCode::from(1)
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -1485,6 +1473,8 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Ok(DaemonArgMode::Update) => run_update_standalone(false),
+        Ok(DaemonArgMode::ForceUpdate) => run_update_standalone(true),
         Ok(DaemonArgMode::CliSubcommand(args)) => run_cli_subcommand(args),
         Err(message) => {
             eprintln!("{message}");
