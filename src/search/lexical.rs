@@ -254,10 +254,12 @@ impl LexicalQuery {
 
 /// Per-field BM25 document-frequency cutoffs.
 ///
-/// Terms whose document frequency exceeds `cutoff_ratio * N` in a given
-/// field are skipped for that field only. This prevents stop words from
-/// dominating content scoring while still allowing high-frequency tag or
-/// concept matches to contribute.
+/// Terms whose **global** document frequency (across all fields) exceeds
+/// `cutoff_ratio * N` are skipped for that field only. Using global DF
+/// preserves the original stop-word suppression behavior: a term that
+/// appears in many documents (in any field) is too common to be
+/// discriminative for low-cutoff fields like content, but may still
+/// contribute to higher-cutoff fields like agent-id or agent-registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bm25DfCutoffs {
     /// DF cutoff ratio for content matches.
@@ -276,8 +278,8 @@ impl Default for Bm25DfCutoffs {
     fn default() -> Self {
         Self {
             content: 0.30,
-            tags: 0.50,
-            concepts: 0.40,
+            tags: 0.30,
+            concepts: 0.30,
             agent_id: 0.70,
             agent_registry: 0.60,
         }
@@ -532,32 +534,14 @@ impl LexicalIndex {
             let Some(postings) = self.postings.get(&term) else {
                 continue;
             };
-            let content_df = postings
-                .iter()
-                .filter(|p| p.content_term_frequency > 0)
-                .count() as f32;
-            let tag_df = postings.iter().filter(|p| p.tag_term_frequency > 0).count() as f32;
-            let concept_df = postings
-                .iter()
-                .filter(|p| p.concept_term_frequency > 0)
-                .count() as f32;
-            let agent_id_df = postings
-                .iter()
-                .filter(|p| p.agent_id_term_frequency > 0)
-                .count() as f32;
-            let agent_registry_df = postings
-                .iter()
-                .filter(|p| p.agent_registry_term_frequency > 0)
-                .count() as f32;
-            let content_allowed =
-                doc_count < 20.0 || content_df / doc_count <= query.df_cutoffs.content;
-            let tags_allowed = doc_count < 20.0 || tag_df / doc_count <= query.df_cutoffs.tags;
-            let concepts_allowed =
-                doc_count < 20.0 || concept_df / doc_count <= query.df_cutoffs.concepts;
-            let agent_id_allowed =
-                doc_count < 20.0 || agent_id_df / doc_count <= query.df_cutoffs.agent_id;
-            let agent_registry_allowed = doc_count < 20.0
-                || agent_registry_df / doc_count <= query.df_cutoffs.agent_registry;
+            let global_df = postings.len() as f32;
+            let global_df_ratio = global_df / doc_count;
+            let content_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.content;
+            let tags_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.tags;
+            let concepts_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.concepts;
+            let agent_id_allowed = doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_id;
+            let agent_registry_allowed =
+                doc_count < 20.0 || global_df_ratio <= query.df_cutoffs.agent_registry;
             if !content_allowed
                 && !tags_allowed
                 && !concepts_allowed
@@ -566,8 +550,7 @@ impl LexicalIndex {
             {
                 continue;
             }
-            let term_df = postings.len() as f32;
-            let idf = bm25_idf(doc_count, term_df);
+            let idf = bm25_idf(doc_count, global_df);
 
             for posting in postings {
                 if candidate_filter

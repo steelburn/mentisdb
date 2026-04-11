@@ -273,7 +273,7 @@ fn querying_went_matches_document_containing_go() {
 }
 
 #[test]
-fn per_field_df_cutoffs_allow_tag_matches_when_content_is_filtered() {
+fn global_df_cutoffs_filter_common_terms_from_strict_fields() {
     let temp = tempdir().unwrap();
     let chain_dir = temp.path().to_path_buf();
     let mut db = MentisDb::open_with_key(&chain_dir, "df-cutoff-test").unwrap();
@@ -293,15 +293,29 @@ fn per_field_df_cutoffs_allow_tag_matches_when_content_is_filtered() {
 
     let strict_cutoffs = Bm25DfCutoffs {
         content: 0.01,
-        tags: 0.80,
-        concepts: 0.80,
-        agent_id: 0.80,
-        agent_registry: 0.80,
+        tags: 0.01,
+        concepts: 0.01,
+        agent_id: 1.0,
+        agent_registry: 1.0,
     };
     let hits = index.search(&LexicalQuery::new("common").with_df_cutoffs(strict_cutoffs));
     assert!(
         hits.is_empty(),
-        "term should be filtered out when content cutoff is strict and term only in content"
+        "term should be filtered out when all strict-field cutoffs are below global DF ratio"
+    );
+
+    let permissive_cutoffs = Bm25DfCutoffs {
+        content: 0.01,
+        tags: 0.01,
+        concepts: 0.01,
+        agent_id: 1.0,
+        agent_registry: 1.0,
+    };
+    let hits_permissive =
+        index.search(&LexicalQuery::new("common").with_df_cutoffs(permissive_cutoffs));
+    assert!(
+        hits_permissive.is_empty(),
+        "globally common term should be filtered from all fields whose cutoff < global DF ratio"
     );
 
     db.append_thought(
@@ -311,17 +325,17 @@ fn per_field_df_cutoffs_allow_tag_matches_when_content_is_filtered() {
     .unwrap();
 
     let index2 = LexicalIndex::build(db.thoughts());
-    let cutoffs = Bm25DfCutoffs {
+    let cutoffs_allow_tags = Bm25DfCutoffs {
         content: 0.01,
-        tags: 0.80,
-        concepts: 0.80,
-        agent_id: 0.80,
-        agent_registry: 0.80,
+        tags: 1.0,
+        concepts: 0.01,
+        agent_id: 1.0,
+        agent_registry: 1.0,
     };
-    let hits2 = index2.search(&LexicalQuery::new("common").with_df_cutoffs(cutoffs));
+    let hits2 = index2.search(&LexicalQuery::new("common").with_df_cutoffs(cutoffs_allow_tags));
     assert!(
         !hits2.is_empty(),
-        "term should match via tags even when content cutoff filters it"
+        "term should match via tags when tags cutoff is permissive enough to pass global DF"
     );
     assert!(
         hits2
