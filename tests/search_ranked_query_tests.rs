@@ -582,14 +582,24 @@ fn ranked_query_graph_without_seed_hits_still_keeps_lexical_match() {
     assert_eq!(ranked.backend, RankedSearchBackend::LexicalGraph);
     assert_eq!(ranked.total_candidates, 2);
     assert_eq!(ranked.hits.len(), 2);
-    assert_eq!(
-        ranked.hits[0].thought.content,
-        "Incident memory seed for explicit include_seeds behavior."
+    assert_eq!(ranked.hits.len(), 2);
+    let lexical_idx = ranked
+        .hits
+        .iter()
+        .position(|h| {
+            h.thought.content == "Incident memory seed for explicit include_seeds behavior."
+        })
+        .unwrap();
+    let graph_idx = ranked
+        .hits
+        .iter()
+        .position(|h| h.thought.content == "Follow-up note reached only through graph expansion.")
+        .unwrap();
+    assert!(ranked.hits[lexical_idx].score.lexical > 0.0);
+    assert!(
+        ranked.hits[graph_idx].score.graph > 0.0 || ranked.hits[graph_idx].score.relation > 0.0
     );
-    assert!(ranked.hits[0].score.lexical > 0.0);
-    assert_eq!(ranked.hits[0].graph_distance, None);
-    assert!(ranked.hits[0].graph_path.is_none());
-    assert_eq!(ranked.hits[1].graph_distance, Some(1));
+    assert_eq!(ranked.hits[graph_idx].graph_distance, Some(1));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

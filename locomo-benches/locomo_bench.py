@@ -161,7 +161,7 @@ def append_turn(base_url: str, chain_key: str, content: str, speaker: str,
 
 
 def rebuild_vectors(base_url: str, chain_key: str) -> None:
-    for provider_key in ["local-text-v1"]:
+    for provider_key in ["fastembed-minilm", "local-text-v1"]:
         try:
             resp = _post(base_url, "/v1/vectors/rebuild", {
                 "chain_key": chain_key,

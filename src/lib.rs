@@ -4440,8 +4440,8 @@ impl MentisDb {
         // should be boosted. This helps LoCoMo-style benchmarks where
         // evidence sits in turns adjacent to the matching turn but shares
         // no lexical terms.
-        const SESSION_COHESION_RADIUS: u64 = 8;
-        const SESSION_COHESION_BOOST: f32 = 0.8;
+        const SESSION_COHESION_RADIUS: u64 = 12;
+        const SESSION_COHESION_BOOST: f32 = 1.2;
         const SESSION_COHESION_MIN_SEED_LEXICAL: f32 = 3.0;
         const SESSION_COHESION_MAX_HIT_LEXICAL: f32 = 5.0;
         if !hits.is_empty() {
@@ -5635,7 +5635,7 @@ impl MentisDb {
     }
 
     fn graph_seed_support_score(&self, seed_paths: usize) -> f32 {
-        seed_paths.saturating_sub(1).min(5) as f32 * 0.1
+        seed_paths.saturating_sub(1).min(5) as f32 * 0.2
     }
 
     fn graph_path_relation_kinds(
@@ -5668,17 +5668,17 @@ impl MentisDb {
 
     fn graph_relation_kind_boost(&self, kind: ThoughtRelationKind) -> f32 {
         match kind {
-            ThoughtRelationKind::Corrects => 0.25,
-            ThoughtRelationKind::Invalidates => 0.25,
-            ThoughtRelationKind::Supersedes => 0.22,
-            ThoughtRelationKind::DerivedFrom => 0.20,
-            ThoughtRelationKind::ContinuesFrom => 0.30,
-            ThoughtRelationKind::Summarizes => 0.11,
-            ThoughtRelationKind::CausedBy => 0.11,
-            ThoughtRelationKind::Supports => 0.09,
-            ThoughtRelationKind::Contradicts => 0.09,
-            ThoughtRelationKind::RelatedTo => 0.05,
-            ThoughtRelationKind::References => 0.04,
+            ThoughtRelationKind::Corrects => 0.5,
+            ThoughtRelationKind::Invalidates => 0.5,
+            ThoughtRelationKind::Supersedes => 0.45,
+            ThoughtRelationKind::DerivedFrom => 0.4,
+            ThoughtRelationKind::ContinuesFrom => 0.6,
+            ThoughtRelationKind::Summarizes => 0.2,
+            ThoughtRelationKind::CausedBy => 0.2,
+            ThoughtRelationKind::Supports => 0.15,
+            ThoughtRelationKind::Contradicts => 0.15,
+            ThoughtRelationKind::RelatedTo => 0.08,
+            ThoughtRelationKind::References => 0.06,
         }
     }
 
