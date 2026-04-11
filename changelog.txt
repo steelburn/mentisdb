@@ -1,3 +1,10 @@
+0.8.5.31 APR/11/2026
+  - fix(cli): panic in update/force-update subcommands — cannot start tokio runtime within runtime
+    - run_update_standalone() created a nested tokio runtime inside #[tokio::main],
+      causing "Cannot start a runtime from within a runtime" panic
+    - Made run_update_standalone async and .await'd fetch directly instead of rt.block_on()
+    - Added test: parse_daemon_args_accepts_update_subcommands verifies update/force-update parse
+
 0.8.4.30 APR/11/2026
   - fix(updater): move update check before chain migrations
     - Users who couldn't open mentisdb after upgrading were stuck because

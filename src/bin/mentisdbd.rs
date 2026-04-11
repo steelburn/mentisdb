@@ -1362,7 +1362,7 @@ pub(crate) fn run_cli_subcommand_with_io(
     mentisdb::cli::run_with_io(args, input, out, err)
 }
 
-fn run_update_standalone(force: bool) -> ExitCode {
+async fn run_update_standalone(force: bool) -> ExitCode {
     let update_config = update_config_from_env();
     if !update_config.enabled && !force {
         eprintln!("Update checks are disabled (MENTISDB_UPDATE_CHECK=false).");
@@ -1374,11 +1374,7 @@ fn run_update_standalone(force: bool) -> ExitCode {
 
     if force {
         println!("Force-updating mentisdbd to the latest release…");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create tokio runtime");
-        let latest = match rt.block_on(fetch_latest_release(&update_config.repo)) {
+        let latest = match fetch_latest_release(&update_config.repo).await {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("Failed to fetch latest release: {e}");
@@ -1400,11 +1396,7 @@ fn run_update_standalone(force: bool) -> ExitCode {
             }
         }
     } else {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create tokio runtime");
-        let latest = match rt.block_on(fetch_latest_release(&update_config.repo)) {
+        let latest = match fetch_latest_release(&update_config.repo).await {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("Failed to fetch latest release: {e}");
@@ -1476,8 +1468,8 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Ok(DaemonArgMode::Update) => run_update_standalone(false),
-        Ok(DaemonArgMode::ForceUpdate) => run_update_standalone(true),
+        Ok(DaemonArgMode::Update) => run_update_standalone(false).await,
+        Ok(DaemonArgMode::ForceUpdate) => run_update_standalone(true).await,
         Ok(DaemonArgMode::CliSubcommand(args)) => run_cli_subcommand(args),
         Err(message) => {
             eprintln!("{message}");

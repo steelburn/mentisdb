@@ -158,6 +158,18 @@ fn parse_daemon_args_accepts_native_setup_and_wizard_subcommands() {
 }
 
 #[test]
+fn parse_daemon_args_accepts_update_subcommands() {
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("update")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::Update
+    );
+    assert_eq!(
+        mentisdbd_impl::parse_daemon_args([OsString::from("force-update")]).unwrap(),
+        mentisdbd_impl::DaemonArgMode::ForceUpdate
+    );
+}
+
+#[test]
 fn parse_daemon_args_rejects_other_unexpected_arguments() {
     let error = mentisdbd_impl::parse_daemon_args([OsString::from("--version")]).unwrap_err();
     assert!(error.contains("Unexpected arguments"));
