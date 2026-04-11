@@ -8,7 +8,7 @@ Modern agent frameworks treat long-term memory as an afterthought. In practice, 
 
 MentisDB stores thoughts -- structured, timestamped, typed, attributable records -- in an append-only hash chain. The chain model is storage-agnostic through a `StorageAdapter` interface, with binary (length-prefixed bincode) as the default backend. A dedicated ranked-retrieval layer combines BM25 lexical scoring, optional vector-semantic similarity, graph-aware expansion from typed relation edges, session cohesion signals, and importance weighting. Temporal edge validity (`valid_at`/`invalid_at`) enables point-in-time queries. Automatic deduplication via Jaccard similarity prevents near-duplicate pollution. Memory scopes (User/Session/Agent) provide visibility isolation without physical chain partitioning.
 
-Benchmarks on standard long-term memory evaluations confirm the retrieval quality: LoCoMo 2-persona R@10 = 88.7%, LoCoMo 10-persona R@10 = 74.2%, LongMemEval R@5 = 67.6% / R@10 = 73.2%.
+Benchmarks on standard long-term memory evaluations confirm the retrieval quality: LoCoMo 2-persona R@10 = 88.7%, LoCoMo 10-persona R@10 = 74.6% (0.8.5), LongMemEval R@5 = 67.6% / R@10 = 73.2%.
 
 The system ships as a single Rust crate with an optional daemon (`mentisdbd`) exposing MCP, REST, and HTTPS dashboard surfaces. It requires no external databases, no LLM API keys for core operation, and no cloud dependencies.
 
@@ -456,22 +456,48 @@ Modern MCP clients bootstrap from the MCP handshake:
 
 ### 10.1 Standard Evaluation Results
 
-| Benchmark | Metric | Score |
-|-----------|--------|-------|
-| LoCoMo 2-persona | R@10 | 88.7% |
-| LoCoMo 2-persona single-hop | R@10 | 90.7% |
-| LoCoMo 10-persona (1977 queries) | R@10 | 74.2% |
-| LongMemEval | R@5 | 67.6% |
-| LongMemEval | R@10 | 73.2% |
+| Benchmark | Metric | 0.8.1 | 0.8.5 |
+|-----------|--------|-------|-------|
+| LoCoMo 2-persona | R@10 | 88.7% | — |
+| LoCoMo 2-persona single-hop | R@10 | 90.7% | — |
+| LoCoMo 10-persona (1977 queries) | R@10 | 74.2% | **74.6%** |
+| LoCoMo 10-persona single-hop | R@10 | — | **79.0%** |
+| LoCoMo 10-persona multi-hop | R@10 | — | **58.4%** |
+| LongMemEval | R@5 | 67.6% | — |
+| LongMemEval | R@10 | 73.2% | — |
 
-### 10.2 Scoring Evolution
+The 0.8.5 LoCoMo 10-persona improvement comes from three tuning changes:
 
-| Version | Change | LongMemEval R@5 |
-|---------|--------|-----------------|
-| 0.8.0 baseline | -- | 57.2% |
-| 0.8.0 + Porter stemming | Token normalization | 61.6% |
-| 0.8.0 + tiered fusion + importance | Vector/lexical balance | 65.0% |
-| 0.8.1 + session cohesion + smooth fusion + DF cutoff | Retrieval quality | 67.6% |
+1. **Session cohesion** — radius 8→12, boost 0.8→1.2. Adjacent thoughts to a lexical
+   match get a stronger signal, pushing near-misses into the top-10.
+2. **Graph relation scores** — doubled across all `ThoughtRelationKind` variants.
+   `ContinuesFrom` 0.30→0.60, `Corrects`/`Invalidates` 0.25→0.50, etc.
+3. **FastEmbed sentence embeddings** — the benchmark now uses `fastembed-minilm`
+   vectors instead of text-only hashing when the `local-embeddings` feature is compiled.
+
+### 10.2 Near-Miss Analysis (LoCoMo 10-persona, 0.8.5)
+
+Of 503 misses (correct answer not in top-10):
+
+| Bucket | Count | % | Interpretation |
+|--------|-------|---|----------------|
+| In top-20 | 130 | 25.8% | Ranking problem — close to fixable |
+| In top-50 | 285 | 56.7% | Moderate gap — needs more signal |
+| Not in top-50 | 218 | 43.3% | Lexical gap — query terms absent from evidence |
+
+The 43.3% lexical gap represents the hard ceiling for BM25-only retrieval on this
+benchmark. Addressing it requires stronger stemming (irregular verb lemmas), larger
+embedding models, or query expansion via LLM.
+
+### 10.3 Scoring Evolution
+
+| Version | Change | LongMemEval R@5 | LoCoMo 10p R@10 |
+|---------|--------|-----------------|-----------------|
+| 0.8.0 baseline | — | 57.2% | — |
+| 0.8.0 + Porter stemming | Token normalization | 61.6% | — |
+| 0.8.0 + tiered fusion + importance | Vector/lexical balance | 65.0% | — |
+| 0.8.1 + session cohesion + smooth fusion + DF cutoff | Retrieval quality | 67.6% | 74.2% |
+| 0.8.5 + cohesion tuning + graph scores + fastembed | Session/graph boost | — | **74.6%** |
 
 ### 10.3 Criterion Micro-Benchmarks
 
