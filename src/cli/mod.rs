@@ -267,18 +267,31 @@ fn resolve_mentisdb_dir(dir: &Option<String>) -> PathBuf {
         .unwrap_or_else(default_mentisdb_dir)
 }
 
-fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Result<(), String> {
+/// Build the JSON body for the `add` subcommand.
+///
+/// `thought_type` is required by the REST API and is always emitted: it
+/// defaults to `fact-learned` when `--type` is omitted, matching the documented
+/// CLI behavior. An explicit `--type` is validated locally against
+/// [`crate::ThoughtType`], so a typo fails with the list of valid types instead
+/// of an opaque server-side rejection.
+pub fn build_add_body(cmd: &AddCommand) -> Result<serde_json::Value, String> {
+    let thought_type = match cmd.thought_type.as_deref() {
+        Some(raw) => raw
+            .parse::<crate::ThoughtType>()
+            .map_err(|error| error.to_string())?
+            .as_str(),
+        None => crate::ThoughtType::FactLearned.as_str(),
+    };
+
     let mut body = serde_json::Map::new();
     body.insert(
         "content".to_string(),
         serde_json::Value::String(cmd.content.clone()),
     );
-    if let Some(ref thought_type) = cmd.thought_type {
-        body.insert(
-            "thought_type".to_string(),
-            serde_json::Value::String(thought_type.clone()),
-        );
-    }
+    body.insert(
+        "thought_type".to_string(),
+        serde_json::Value::String(thought_type.to_string()),
+    );
     if let Some(ref scope) = cmd.scope {
         body.insert(
             "scope".to_string(),
@@ -291,7 +304,7 @@ fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Resul
             serde_json::Value::Array(
                 cmd.tags
                     .iter()
-                    .map(|t| serde_json::Value::String(t.clone()))
+                    .map(|tag| serde_json::Value::String(tag.clone()))
                     .collect(),
             ),
         );
@@ -308,9 +321,14 @@ fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Resul
             serde_json::Value::String(chain_key.clone()),
         );
     }
+    Ok(serde_json::Value::Object(body))
+}
+
+fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Result<(), String> {
+    let body = build_add_body(cmd)?;
     let url = format!("{}/v1/thoughts", cmd.url.trim_end_matches('/'));
     let response = ureq::post(&url)
-        .send_json(serde_json::Value::Object(body))
+        .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
     let json: serde_json::Value = response
         .into_json()
@@ -323,11 +341,11 @@ fn run_add(cmd: &AddCommand, out: &mut dyn Write, _err: &mut dyn Write) -> Resul
     Ok(())
 }
 
-fn run_search(
-    cmd: &SearchCommand,
-    out: &mut dyn Write,
-    _err: &mut dyn Write,
-) -> Result<(), String> {
+/// Build the JSON body for the `search` subcommand.
+///
+/// Ranked search reads the query from the `text` field, matching
+/// `RankedSearchRequest` in the REST API.
+pub fn build_ranked_search_body(cmd: &SearchCommand) -> serde_json::Value {
     let mut body = serde_json::Map::new();
     body.insert(
         "text".to_string(),
@@ -348,9 +366,18 @@ fn run_search(
             serde_json::Value::String(chain_key.clone()),
         );
     }
+    serde_json::Value::Object(body)
+}
+
+fn run_search(
+    cmd: &SearchCommand,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
+) -> Result<(), String> {
+    let body = build_ranked_search_body(cmd);
     let url = format!("{}/v1/ranked-search", cmd.url.trim_end_matches('/'));
     let response = ureq::post(&url)
-        .send_json(serde_json::Value::Object(body))
+        .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
     let json: serde_json::Value = response
         .into_json()
