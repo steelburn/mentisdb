@@ -146,6 +146,117 @@ fn vector_sidecar_wal_replays_after_snapshot() {
     assert_eq!(loaded.entries[1].thought_id, id_b);
 }
 
+/// Verifies that compacting a sidecar rebases its in-memory WAL chain head onto
+/// the snapshot digest, so appending after a compaction replays on the next load.
+#[test]
+fn vector_sidecar_append_after_compact_replays() {
+    let tempdir = TempDir::new().unwrap();
+    let path = tempdir.path().join("chain.vectors.model.v1.json");
+    let mut sidecar = VectorSidecar::build(
+        "mentisdb",
+        EmbeddingMetadata::new("local-model", 2, "v1"),
+        1,
+        Some("head-a".to_string()),
+        Utc::now(),
+        vec![VectorSidecarEntry::new(
+            Uuid::new_v4(),
+            0,
+            "hash-a",
+            vec![1.0, 0.0],
+        )],
+    )
+    .unwrap();
+    sidecar.save_to_path(&path).unwrap();
+
+    let record = sidecar
+        .extend_with_entry(
+            VectorSidecarEntry::new(Uuid::new_v4(), 1, "hash-b", vec![0.0, 1.0]),
+            2,
+            Some("head-b".to_string()),
+        )
+        .unwrap();
+    let wal = sidecar_wal_path(&path);
+    append_sidecar_wal_record(&wal, &record).unwrap();
+
+    sidecar.compact_to_path(&path).unwrap();
+    assert!(!wal.exists());
+    let compacted = VectorSidecar::load_from_path(&path).unwrap();
+    assert_eq!(
+        sidecar.integrity, compacted.integrity,
+        "compaction must rebase the in-memory WAL head onto the snapshot digest"
+    );
+
+    let record = sidecar
+        .extend_with_entry(
+            VectorSidecarEntry::new(Uuid::new_v4(), 2, "hash-c", vec![0.5, 0.5]),
+            3,
+            Some("head-c".to_string()),
+        )
+        .unwrap();
+    append_sidecar_wal_record(&wal, &record).unwrap();
+
+    let loaded = VectorSidecar::load_from_path(&path)
+        .expect("append after compact must replay against the compacted snapshot digest");
+    assert_eq!(loaded.entries.len(), 3);
+    assert_eq!(loaded.thought_count, 3);
+}
+
+/// Verifies that writing a full snapshot clears a stale sibling WAL, so a
+/// from-scratch rebuild can never leave an older WAL to be replayed against a
+/// newer snapshot.
+#[test]
+fn vector_sidecar_full_snapshot_clears_stale_wal() {
+    let tempdir = TempDir::new().unwrap();
+    let path = tempdir.path().join("chain.vectors.model.v1.json");
+    let wal = sidecar_wal_path(&path);
+
+    let mut first = VectorSidecar::build(
+        "mentisdb",
+        EmbeddingMetadata::new("local-model", 2, "v1"),
+        1,
+        Some("head-a".to_string()),
+        Utc::now(),
+        vec![VectorSidecarEntry::new(
+            Uuid::new_v4(),
+            0,
+            "hash-a",
+            vec![1.0, 0.0],
+        )],
+    )
+    .unwrap();
+    first.save_to_path(&path).unwrap();
+    let record = first
+        .extend_with_entry(
+            VectorSidecarEntry::new(Uuid::new_v4(), 1, "hash-b", vec![0.0, 1.0]),
+            2,
+            Some("head-b".to_string()),
+        )
+        .unwrap();
+    append_sidecar_wal_record(&wal, &record).unwrap();
+    assert!(wal.exists());
+
+    let rebuilt = VectorSidecar::build(
+        "mentisdb",
+        EmbeddingMetadata::new("local-model", 2, "v1"),
+        1,
+        Some("head-a".to_string()),
+        Utc::now(),
+        vec![VectorSidecarEntry::new(
+            Uuid::new_v4(),
+            0,
+            "hash-c",
+            vec![0.5, 0.5],
+        )],
+    )
+    .unwrap();
+    rebuilt.save_to_path(&path).unwrap();
+
+    assert!(!wal.exists(), "a full snapshot must clear the stale WAL");
+    let loaded = VectorSidecar::load_from_path(&path).unwrap();
+    assert_eq!(loaded.entries.len(), 1);
+    assert_eq!(loaded.entries[0].thought_hash, "hash-c");
+}
+
 #[test]
 fn vector_sidecar_compact_removes_wal() {
     let tempdir = TempDir::new().unwrap();

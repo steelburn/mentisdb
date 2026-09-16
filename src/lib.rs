@@ -5084,7 +5084,7 @@ impl MentisDb {
         for (path, record) in pending.sidecar_wals {
             crate::search::append_sidecar_wal_record(&path, &record)?;
         }
-        for (path, sidecar) in pending.sidecar_compacts {
+        for (path, mut sidecar) in pending.sidecar_compacts {
             sidecar.compact_to_path(&path)?;
         }
         if let Some((path, overlay)) = pending.overlay {

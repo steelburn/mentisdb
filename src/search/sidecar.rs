@@ -14,6 +14,12 @@
 //! [`VectorSidecar::compact_to_path`] rewrites the JSON snapshot and deletes
 //! the WAL. Binaries that only understand the JSON snapshot see a stale
 //! sidecar when a WAL is pending and rebuild from the chain.
+//!
+//! The WAL chain head must always match the representation on disk. While a
+//! WAL is pending the head is the last record's incremental digest; after a
+//! compaction it is the full-corpus digest stored in the snapshot, so the
+//! in-memory sidecar adopts that digest via
+//! [`VectorSidecar::refresh_snapshot_integrity`] before any further append.
 
 use crate::search::EmbeddingMetadata;
 use chrono::{DateTime, Utc};
@@ -199,7 +205,10 @@ impl VectorSidecar {
     ///
     /// Integrity is chained as `SHA-256(prev_digest || entry bytes)` so a later
     /// compact can rewrite the JSON snapshot without hashing the whole corpus
-    /// on every append.
+    /// on every append. After [`VectorSidecar::compact_to_path`] the chain head
+    /// is the snapshot digest, which [`VectorSidecar::refresh_snapshot_integrity`]
+    /// adopts; callers that compact out of band must adopt it too before
+    /// appending.
     pub fn extend_with_entry(
         &mut self,
         entry: VectorSidecarEntry,
@@ -241,32 +250,56 @@ impl VectorSidecar {
         Ok(record)
     }
 
-    /// Rewrite the JSON snapshot and delete the WAL so a full verify matches.
-    pub fn compact_to_path(&self, path: &Path) -> io::Result<()> {
-        let mut snapshot = self.clone();
-        snapshot.integrity = snapshot.compute_integrity()?;
-        snapshot.save_to_path(path)?;
-        let wal = sidecar_wal_path(path);
-        if wal.exists() {
-            fs::remove_file(wal)?;
-        }
+    /// Rewrite the JSON snapshot, clear the WAL, and adopt the persisted
+    /// snapshot digest as the WAL chain head.
+    ///
+    /// Compaction collapses `snapshot + WAL` into a single snapshot whose stored
+    /// digest is the full-corpus digest. `self.integrity` is advanced to that
+    /// same digest so a later [`VectorSidecar::extend_with_entry`] chains from
+    /// the digest actually on disk rather than the pre-compaction incremental
+    /// digest, which would fail WAL replay on the next load.
+    pub fn compact_to_path(&mut self, path: &Path) -> io::Result<()> {
+        self.refresh_snapshot_integrity()?;
+        self.save_to_path(path)
+    }
+
+    /// Recompute `integrity` as the full-corpus snapshot digest.
+    ///
+    /// Incremental appends keep `integrity` linked to the previous WAL record so
+    /// the next record can chain to it without rehashing the corpus. A
+    /// compaction replaces that incremental chain with the full-corpus digest
+    /// stored in the snapshot, so the in-memory sidecar must adopt it before
+    /// writing another WAL record. [`VectorSidecar::compact_to_path`] does this
+    /// for the handle it mutates; the managed append path calls it when it
+    /// schedules a compaction that a later flush applies to a clone.
+    pub(crate) fn refresh_snapshot_integrity(&mut self) -> io::Result<()> {
+        self.integrity = self.compute_integrity()?;
         Ok(())
     }
 
-    /// Persist a sidecar to disk.
+    /// Persist a full sidecar snapshot to disk, clearing any sibling WAL.
     ///
-    /// Integrity is checked on load. Skipping a second serialize+hash here
-    /// keeps append-time writes from paying O(n) hashing twice.
+    /// A complete snapshot supersedes incremental WAL records, so the sibling
+    /// `.wal` is removed before the snapshot is atomically replaced. Clearing it
+    /// first keeps the on-disk pair recoverable: a crash can leave the previous
+    /// snapshot without a WAL (merely stale, so it rebuilds) but never a newer
+    /// snapshot paired with an older WAL, which is the state that fails digest
+    /// replay.
+    ///
+    /// Integrity is checked on load. Skipping a second serialize+hash here keeps
+    /// append-time writes from paying O(n) hashing twice.
     pub fn save_to_path(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let temp_path = sidecar_temp_path(path);
         let file = File::create(&temp_path)?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, self).map_err(|error| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, self).map_err(|error| {
             io::Error::other(format!("Failed to serialize vector sidecar: {error}"))
         })?;
+        writer.flush()?;
+        remove_sidecar_wal(path)?;
         replace_sidecar_file(&temp_path, path)
     }
 
@@ -481,6 +514,17 @@ pub fn sidecar_wal_path(snapshot_path: &Path) -> PathBuf {
     let mut os = snapshot_path.as_os_str().to_os_string();
     os.push(".wal");
     PathBuf::from(os)
+}
+
+/// Remove the sibling WAL for `snapshot_path` if it exists.
+///
+/// A missing WAL is not an error: most snapshots are written without one.
+fn remove_sidecar_wal(snapshot_path: &Path) -> io::Result<()> {
+    match fs::remove_file(sidecar_wal_path(snapshot_path)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Append one verified WAL record to `wal_path`.
