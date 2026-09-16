@@ -1845,6 +1845,198 @@ pub enum ThoughtType {
     LLMExtracted,
 }
 
+/// Error returned when a string cannot be parsed as a [`ThoughtType`].
+///
+/// The [`Display`](std::fmt::Display) implementation lists every valid type, so
+/// CLI and service callers can surface an actionable message instead of an
+/// opaque schema rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseThoughtTypeError {
+    input: String,
+}
+
+impl ParseThoughtTypeError {
+    /// The original input string that failed to parse.
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+}
+
+impl std::fmt::Display for ParseThoughtTypeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Unknown ThoughtType '{}'. Valid types: {}",
+            self.input,
+            ThoughtType::ALL
+                .iter()
+                .map(ThoughtType::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ParseThoughtTypeError {}
+
+impl ThoughtType {
+    /// Every valid [`ThoughtType`], in declaration order.
+    ///
+    /// Useful for validating user input, generating help text, or building
+    /// filter UIs without hard-coding the variant list.
+    pub const ALL: [ThoughtType; 31] = [
+        ThoughtType::PreferenceUpdate,
+        ThoughtType::UserTrait,
+        ThoughtType::RelationshipUpdate,
+        ThoughtType::Finding,
+        ThoughtType::Insight,
+        ThoughtType::FactLearned,
+        ThoughtType::PatternDetected,
+        ThoughtType::Hypothesis,
+        ThoughtType::Mistake,
+        ThoughtType::Correction,
+        ThoughtType::LessonLearned,
+        ThoughtType::AssumptionInvalidated,
+        ThoughtType::Constraint,
+        ThoughtType::Plan,
+        ThoughtType::Subgoal,
+        ThoughtType::Decision,
+        ThoughtType::StrategyShift,
+        ThoughtType::Wonder,
+        ThoughtType::Question,
+        ThoughtType::Idea,
+        ThoughtType::Experiment,
+        ThoughtType::ActionTaken,
+        ThoughtType::TaskComplete,
+        ThoughtType::Checkpoint,
+        ThoughtType::StateSnapshot,
+        ThoughtType::Handoff,
+        ThoughtType::Summary,
+        ThoughtType::Surprise,
+        ThoughtType::Reframe,
+        ThoughtType::Goal,
+        ThoughtType::LLMExtracted,
+    ];
+
+    /// Canonical PascalCase name for this thought type.
+    ///
+    /// This is the value accepted and emitted by the REST and MCP APIs.
+    /// Parsing is case-insensitive and ignores non-alphanumeric characters, so
+    /// `"fact-learned"`, `"factlearned"`, and `"FactLearned"` all resolve to
+    /// [`ThoughtType::FactLearned`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mentisdb::ThoughtType;
+    ///
+    /// assert_eq!(ThoughtType::FactLearned.as_str(), "FactLearned");
+    /// assert_eq!(
+    ///     "fact-learned".parse::<ThoughtType>().unwrap(),
+    ///     ThoughtType::FactLearned
+    /// );
+    /// ```
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThoughtType::PreferenceUpdate => "PreferenceUpdate",
+            ThoughtType::UserTrait => "UserTrait",
+            ThoughtType::RelationshipUpdate => "RelationshipUpdate",
+            ThoughtType::Finding => "Finding",
+            ThoughtType::Insight => "Insight",
+            ThoughtType::FactLearned => "FactLearned",
+            ThoughtType::PatternDetected => "PatternDetected",
+            ThoughtType::Hypothesis => "Hypothesis",
+            ThoughtType::Mistake => "Mistake",
+            ThoughtType::Correction => "Correction",
+            ThoughtType::LessonLearned => "LessonLearned",
+            ThoughtType::AssumptionInvalidated => "AssumptionInvalidated",
+            ThoughtType::Constraint => "Constraint",
+            ThoughtType::Plan => "Plan",
+            ThoughtType::Subgoal => "Subgoal",
+            ThoughtType::Decision => "Decision",
+            ThoughtType::StrategyShift => "StrategyShift",
+            ThoughtType::Wonder => "Wonder",
+            ThoughtType::Question => "Question",
+            ThoughtType::Idea => "Idea",
+            ThoughtType::Experiment => "Experiment",
+            ThoughtType::ActionTaken => "ActionTaken",
+            ThoughtType::TaskComplete => "TaskComplete",
+            ThoughtType::Checkpoint => "Checkpoint",
+            ThoughtType::StateSnapshot => "StateSnapshot",
+            ThoughtType::Handoff => "Handoff",
+            ThoughtType::Summary => "Summary",
+            ThoughtType::Surprise => "Surprise",
+            ThoughtType::Reframe => "Reframe",
+            ThoughtType::Goal => "Goal",
+            ThoughtType::LLMExtracted => "LLMExtracted",
+        }
+    }
+}
+
+impl std::fmt::Display for ThoughtType {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ThoughtType {
+    type Err = ParseThoughtTypeError;
+
+    /// Parse a [`ThoughtType`] from a case-insensitive, separator-insensitive
+    /// label such as `"FactLearned"`, `"fact-learned"`, or `"fact learned"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseThoughtTypeError`] when the label does not match any
+    /// variant. The error message lists every valid type.
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let normalized: String = input
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        let thought_type = match normalized.as_str() {
+            "preferenceupdate" => ThoughtType::PreferenceUpdate,
+            "usertrait" => ThoughtType::UserTrait,
+            "relationshipupdate" => ThoughtType::RelationshipUpdate,
+            "finding" => ThoughtType::Finding,
+            "insight" => ThoughtType::Insight,
+            "factlearned" => ThoughtType::FactLearned,
+            "patterndetected" => ThoughtType::PatternDetected,
+            "hypothesis" => ThoughtType::Hypothesis,
+            "mistake" => ThoughtType::Mistake,
+            "correction" => ThoughtType::Correction,
+            "lessonlearned" => ThoughtType::LessonLearned,
+            "assumptioninvalidated" => ThoughtType::AssumptionInvalidated,
+            "constraint" => ThoughtType::Constraint,
+            "plan" => ThoughtType::Plan,
+            "subgoal" => ThoughtType::Subgoal,
+            "decision" => ThoughtType::Decision,
+            "strategyshift" => ThoughtType::StrategyShift,
+            "wonder" => ThoughtType::Wonder,
+            "question" => ThoughtType::Question,
+            "idea" => ThoughtType::Idea,
+            "experiment" => ThoughtType::Experiment,
+            "actiontaken" => ThoughtType::ActionTaken,
+            "taskcomplete" => ThoughtType::TaskComplete,
+            "checkpoint" => ThoughtType::Checkpoint,
+            "statesnapshot" => ThoughtType::StateSnapshot,
+            "handoff" => ThoughtType::Handoff,
+            "summary" => ThoughtType::Summary,
+            "surprise" => ThoughtType::Surprise,
+            "reframe" => ThoughtType::Reframe,
+            "goal" => ThoughtType::Goal,
+            "llmextracted" => ThoughtType::LLMExtracted,
+            _ => {
+                return Err(ParseThoughtTypeError {
+                    input: input.to_string(),
+                })
+            }
+        };
+        Ok(thought_type)
+    }
+}
+
 /// Operational role of a thought inside the system.
 ///
 /// Roles answer how a thought is being used by the system, which lets callers
