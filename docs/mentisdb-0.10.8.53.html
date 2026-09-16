@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MentisDB 0.10.8.53 — Technical Debt: Sidecar WAL Brick, CLI Thought Types</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      line-height: 1.7;
+      color: #1a1a2e;
+      background: #fafafa;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    header { margin-bottom: 3rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 1.5rem; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 a { color: #1a1a2e; text-decoration: none; }
+    header p { color: #666; margin-top: 0.25rem; font-size: 0.95rem; }
+    article { margin-bottom: 3rem; }
+    article h2 { font-size: 1.4rem; margin-bottom: 0.5rem; }
+    article h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #333; }
+    article .meta { color: #888; font-size: 0.85rem; margin-bottom: 1rem; }
+    article p { margin-bottom: 1rem; }
+    article ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    article li { margin-bottom: 0.4rem; }
+    article code { background: #f0f0f0; padding: 0.15em 0.35em; border-radius: 3px; font-size: 0.9em; }
+    article pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; margin-bottom: 1rem; }
+    article pre code { background: none; padding: 0; }
+    a { color: #4361ee; }
+    .callout { background: #eef2ff; border-left: 3px solid #4361ee; border-radius: 0 4px 4px 0; padding: 1rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <nav style="margin-bottom:0.75rem;font-size:0.85rem;">
+      <a href="https://mentisdb.com">mentisdb.com</a> &middot; <a href="https://docs.mentisdb.com">docs</a> &middot; <a href="https://github.com/CloudLLM-ai/mentisdb">github</a>
+    </nav>
+    <h1><a href="index.html">MentisDB Blog</a></h1>
+    <p>Durable memory for AI agents</p>
+  </header>
+
+  <article>
+    <h2>MentisDB 0.10.8.53 &mdash; Technical Debt: Sidecar WAL Brick, CLI Thought Types</h2>
+    <div class="meta">September 16, 2026</div>
+
+    <p>
+      This is a technical-debt release. It closes the two open bug reports filed
+      against the 0.10.x line &mdash; a vector sidecar bug that could make a chain
+      stop opening, and a CLI flag that was documented but not wired &mdash; and
+      removes three copies of the thought-type table that had already drifted
+      apart.
+    </p>
+
+    <div class="callout">
+      <strong>Upgrade:</strong>
+      <code>cargo install mentisdb --locked --force</code>
+      then restart the daemon. Existing chains and sidecars are unchanged; a sidecar
+      that was already broken is rebuilt from the canonical thought log on open.
+    </div>
+
+    <h3>1. A chain could brick itself after 32 appends</h3>
+    <p>
+      The sidecar WAL added in 0.10.6 stores one integrity-chained record per append
+      and compacts the JSON snapshot every 32 records. Compaction collapsed
+      <code>snapshot + WAL</code> into a single snapshot carrying the full-corpus
+      digest, but it never told the live in-memory sidecar. The next append then
+      chained its WAL record to the <em>pre-compaction</em> digest.
+    </p>
+    <p>
+      Nothing failed until the process restarted. On the next open, replay saw a
+      snapshot digest that did not match the first WAL record:
+    </p>
+    <pre><code>InvalidData("vector sidecar WAL digest chain mismatch")</code></pre>
+    <p>
+      Because the chain could not be opened, the daemon rejected every write and most
+      reads on it, persistently, and the dashboard/REST rebuild button was
+      unreachable (it needs an open chain). The only recovery was deleting
+      <code>*.json.wal</code> by hand. That is a derived artifact taking down the
+      canonical log, which is exactly what the design says must never happen.
+    </p>
+    <p>Three fixes, one contract:</p>
+    <ul>
+      <li>Compaction rebases the in-memory WAL chain head onto the persisted snapshot digest.</li>
+      <li>The managed append path rebases the live cached sidecar when it schedules a compaction (the last point that still holds <code>&amp;mut self</code>, so the persist-wins read-lock design is untouched).</li>
+      <li>A full snapshot write clears any sibling <code>.wal</code> before the atomic rename, so a crash can only leave a stale &mdash; rebuildable &mdash; snapshot without a WAL, never a newer snapshot paired with an older WAL.</li>
+    </ul>
+    <p>
+      An unreadable sidecar now degrades to a rebuild on open, matching the three
+      other sidecar load sites and the documented contract. Regression tests cover
+      append-after-compact replay, stale-WAL clearing, reopening across two
+      compaction boundaries, and a foreign-generation WAL.
+    </p>
+
+    <h3>2. <code>mentisdb add</code> was missing <code>thought_type</code></h3>
+    <p>
+      Both the help text and the struct doc promised
+      <code>--type &lt;type&gt; Thought type (default: fact-learned)</code>, but the
+      CLI only sent <code>thought_type</code> when <code>--type</code> was passed.
+      A plain <code>mentisdb add "text"</code> therefore failed with HTTP 422
+      <code>missing field thought_type</code>, and a typo like
+      <code>--type note</code> produced an opaque server 400.
+    </p>
+    <p>
+      <code>add</code> now always sends the field, defaulting to
+      <code>fact-learned</code>, and validates an explicit <code>--type</code>
+      locally:
+    </p>
+    <pre><code>$ mentisdb add "bad" --type note
+add failed: Unknown ThoughtType 'note'. Valid types: PreferenceUpdate,
+UserTrait, RelationshipUpdate, Finding, Insight, FactLearned, PatternDetected,
+Hypothesis, Mistake, Correction, LessonLearned, AssumptionInvalidated,
+Constraint, Plan, Subgoal, Decision, StrategyShift, Wonder, Question, Idea,
+Experiment, ActionTaken, TaskComplete, Checkpoint, StateSnapshot, Handoff,
+Summary, Surprise, Reframe, Goal, LLMExtracted</code></pre>
+    <p>
+      The outgoing payloads are now built by pure
+      <code>build_add_body</code> / <code>build_ranked_search_body</code> helpers
+      with regression tests, so the CLI and the REST schema cannot drift again
+      silently.
+    </p>
+
+    <h3>3. One canonical thought-type parser</h3>
+    <p>
+      <code>server.rs</code>, <code>llm.rs</code>, and <code>lib.rs</code> each had
+      their own copy of the <code>ThoughtType</code> string table, and they had
+      drifted: the server rejected <code>Goal</code> and <code>LLMExtracted</code>
+      even though both are valid variants. There is now a single
+      <code>FromStr</code>/<code>Display</code>/<code>as_str</code>/<code>ALL</code>
+      implementation with a typed error that lists the valid options, and all three
+      call sites delegate to it.
+    </p>
+
+    <h3>Upgrade</h3>
+    <pre><code>cargo install mentisdb --locked --force</code></pre>
+    <p>
+      Then restart the daemon. Full LoCoMo and LongMemEval benchmarks were not re-run:
+      this release changes no retrieval scoring.
+    </p>
+
+    <p>
+      Issues closed: <a href="https://github.com/CloudLLM-ai/mentisdb/issues/20">#20</a>
+      (sidecar WAL digest mismatch) and
+      <a href="https://github.com/CloudLLM-ai/mentisdb/issues/17">#17</a>
+      (CLI missing <code>thought_type</code>).
+    </p>
+  </article>
+</body>
+</html>

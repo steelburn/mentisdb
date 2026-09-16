@@ -40,6 +40,20 @@
   </header>
 
   <article>
+    <h2><a href="mentisdb-0.10.8.53.html">MentisDB 0.10.8.53 &mdash; Technical Debt: Sidecar WAL Brick, CLI Thought Types</a></h2>
+    <div class="meta">September 16, 2026</div>
+    <p>
+      Closes issues #17 and #20. A vector sidecar compaction digest divergence
+      could make a chain stop opening after 32 appends; the sidecar now rebases
+      its WAL chain head, clears stale WALs before the atomic rename, and rebuilds
+      instead of aborting the open. <code>mentisdb add</code> now sends the
+      required <code>thought_type</code> (default <code>fact-learned</code>) and
+      validates <code>--type</code> locally. One canonical
+      <code>ThoughtType</code> parser replaces three drifting copies.
+    </p>
+  </article>
+
+  <article>
     <h2><a href="mentisdb-0.10.7.52.html">MentisDB 0.10.7.52 &mdash; Hotfix: skill registry boot crash</a></h2>
     <div class="meta">August 16, 2026</div>
     <p>
