@@ -529,6 +529,80 @@ fn managed_sidecar_survives_reopen_after_compaction_boundary() {
     assert!(!result.hits.is_empty());
 }
 
+/// Verifies that an unreadable sidecar WAL (here a record from a different
+/// generation) degrades to a rebuild on chain open instead of failing open.
+#[test]
+fn managed_sidecar_rebuilds_when_wal_digest_is_stale() {
+    use chrono::Utc;
+    use mentisdb::search::{
+        append_sidecar_wal_record, sidecar_wal_path, VectorSidecar, VectorSidecarEntry,
+    };
+    use uuid::Uuid;
+
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let provider = TestSemanticProvider::new("local-test", "v1");
+    let chain_key = "wal-stale-reopen";
+
+    let sidecar_path;
+    {
+        let mut chain = MentisDb::open_with_key(&chain_dir, chain_key).unwrap();
+        chain
+            .append(
+                "agent",
+                ThoughtType::Idea,
+                "invoice reconciliation for vendor payments",
+            )
+            .unwrap();
+        chain.manage_vector_sidecar(provider.clone()).unwrap();
+        chain
+            .append(
+                "agent",
+                ThoughtType::Idea,
+                "latency budget for the Europe rollout",
+            )
+            .unwrap();
+        sidecar_path = chain.vector_sidecar_path(provider.metadata()).unwrap();
+    }
+
+    // Replace the valid WAL with one from a different generation so its first
+    // record links to a snapshot digest that is not the one on disk.
+    let mut foreign = VectorSidecar::build(
+        "some-other-chain",
+        EmbeddingMetadata::new("local-test", 2, "v1"),
+        1,
+        Some("other-head".to_string()),
+        Utc::now(),
+        vec![VectorSidecarEntry::new(
+            Uuid::new_v4(),
+            0,
+            "other-hash",
+            vec![1.0, 0.0],
+        )],
+    )
+    .unwrap();
+    let record = foreign
+        .extend_with_entry(
+            VectorSidecarEntry::new(Uuid::new_v4(), 1, "other-hash-2", vec![0.0, 1.0]),
+            2,
+            Some("other-head-2".to_string()),
+        )
+        .unwrap();
+    let wal = sidecar_wal_path(&sidecar_path);
+    std::fs::write(&wal, b"MDBVWAL1").unwrap();
+    append_sidecar_wal_record(&wal, &record).unwrap();
+
+    let mut chain = MentisDb::open_with_key(&chain_dir, chain_key).unwrap();
+    let sidecar = chain
+        .manage_vector_sidecar(provider.clone())
+        .expect("an unreadable sidecar WAL must rebuild, not fail the chain open");
+    assert_eq!(sidecar.entries.len(), 2);
+    assert!(
+        !wal.exists(),
+        "the rebuild must clear the stale WAL it replaced"
+    );
+}
+
 #[test]
 #[cfg(feature = "local-embeddings")]
 #[ignore = "slow: builds a 50k HNSW graph"]

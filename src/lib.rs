@@ -6627,10 +6627,23 @@ impl MentisDb {
         &mut self,
         provider: P,
     ) -> Result<crate::search::VectorSidecar, VectorSearchError<P::Error>> {
-        let sidecar = match self
-            .load_vector_sidecar(provider.metadata())
-            .map_err(VectorSearchError::Io)?
-        {
+        let loaded = match self.load_vector_sidecar(provider.metadata()) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                // The append-only chain is canonical and the sidecar is derived,
+                // so an unreadable sidecar (for example a WAL that no longer
+                // matches its snapshot) degrades to a rebuild instead of
+                // blocking the chain from opening. This matches the other
+                // sidecar load sites and the documented contract.
+                eprintln!(
+                    "[mentisdb] ignoring unreadable vector sidecar for '{}' ({}): {error}; rebuilding from chain",
+                    provider.metadata().model_id,
+                    provider.metadata().embedding_version,
+                );
+                None
+            }
+        };
+        let sidecar = match loaded {
             Some(sidecar)
                 if matches!(
                     self.vector_sidecar_freshness(&sidecar, provider.metadata())
