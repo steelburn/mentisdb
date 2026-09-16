@@ -2094,6 +2094,13 @@ to say how the system should treat it operationally. The crate rustdoc is the
 authoritative source for per-variant semantics, and the Agent Guide on the docs
 site contains a human-oriented explanation of when to use each one.
 
+String forms round-trip through one canonical mapping: `ThoughtType::ALL` lists
+every variant, `as_str()` / `Display` return the canonical PascalCase name, and
+`FromStr` accepts any case with separators ignored (`"fact-learned"`,
+`"factlearned"`, and `"FactLearned"` all parse to `FactLearned`). Unknown input
+returns `ParseThoughtTypeError`, whose message lists the valid types; the REST
+and MCP `thought_type` fields use the same parser.
+
 ### Memory Scopes
 
 MentisDB defines a `MemoryScope` enum that controls how far a thought should propagate:

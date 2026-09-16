@@ -108,6 +108,7 @@ Write **immediately** when any becomes true: LessonLearned (bug cause, framework
 | Correction | Fixed version of a prior mistake | Memory |
 | AssumptionInvalidated | Trusted premise no longer holds | Memory |
 | Plan / Subgoal | Future work shape, not decisions already made | Memory |
+| Goal | High-level objective; broader than Plan (what, not how) | Memory |
 | TaskComplete | Task or milestone finished durably | Memory |
 | Summary | Compressed view of prior thoughts | Checkpoint |
 | Checkpoint | Explicit resumption marker | Checkpoint |
@@ -118,6 +119,8 @@ Write **immediately** when any becomes true: LessonLearned (bug cause, framework
 | LLMExtracted | Auto-extracted from free text via LLM | Memory |
 
 Most resumable notes should be `Summary` with `role: Checkpoint`.
+
+`thought_type` names are matched case-insensitively and ignore separators, so `LessonLearned`, `lesson-learned`, and `lesson learned` are equivalent. The table lists the types you will reach for most; the enum is the full set.
 
 ## 🔗 THOUGHT GRAPH
 
