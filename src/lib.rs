@@ -7341,7 +7341,7 @@ impl MentisDb {
                         .unwrap()
                         .provider
                         .as_ref();
-                    let (new_sidecar, wal_record) =
+                    let (mut new_sidecar, wal_record) =
                         self.extend_fresh_vector_sidecar(provider, sidecar, thought)?;
                     {
                         let entry = self.managed_vector_sidecars.get_mut(&metadata).unwrap();
@@ -7360,7 +7360,7 @@ impl MentisDb {
                             }
                         }
                     }
-                    self.queue_sidecar_wal(&path, wal_record, &new_sidecar, &metadata);
+                    self.queue_sidecar_wal(&path, wal_record, &mut new_sidecar, &metadata)?;
                     new_sidecar
                 }
                 Some(_) | None => {
@@ -7411,13 +7411,22 @@ impl MentisDb {
             .push((snapshot_path.to_path_buf(), sidecar.clone()));
     }
 
+    /// Queue one WAL record for the last append, scheduling a snapshot
+    /// compaction when the WAL reaches
+    /// [`crate::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD`].
+    ///
+    /// When a compaction is scheduled, `sidecar` is rebased onto the
+    /// full-corpus snapshot digest that compaction will persist. The queued
+    /// compaction rewrites the snapshot with that digest and drops the WAL, so
+    /// the live handle must adopt it now; otherwise the next append chains a WAL
+    /// record to the pre-compaction incremental digest and fails replay.
     fn queue_sidecar_wal(
         &mut self,
         snapshot_path: &Path,
         record: crate::search::VectorSidecarWalRecord,
-        sidecar: &crate::search::VectorSidecar,
+        sidecar: &mut crate::search::VectorSidecar,
         metadata: &crate::search::EmbeddingMetadata,
-    ) {
+    ) -> io::Result<()> {
         let wal_path = crate::search::sidecar_wal_path(snapshot_path);
         let next = self
             .managed_vector_sidecars
@@ -7425,6 +7434,9 @@ impl MentisDb {
             .map(|entry| entry.wal_uncompacted.saturating_add(1))
             .unwrap_or(1);
         let compact = next >= crate::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD;
+        if compact {
+            sidecar.refresh_snapshot_integrity()?;
+        }
         {
             let mut pending = self
                 .pending_derived
@@ -7440,6 +7452,7 @@ impl MentisDb {
         if let Some(entry) = self.managed_vector_sidecars.get_mut(metadata) {
             entry.wal_uncompacted = if compact { 0 } else { next };
         }
+        Ok(())
     }
 
     fn extend_fresh_vector_sidecar(

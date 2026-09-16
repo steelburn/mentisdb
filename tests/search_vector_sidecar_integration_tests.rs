@@ -486,6 +486,49 @@ fn managed_vector_sidecar_builds_hnsw_in_background() {
     panic!("HNSW background build did not complete");
 }
 
+/// Verifies that a managed sidecar survives a reopen after crossing a WAL
+/// compaction boundary: the deterministic digest divergence used to brick the
+/// chain on the first append past a compaction.
+#[test]
+fn managed_sidecar_survives_reopen_after_compaction_boundary() {
+    use mentisdb::search::VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD;
+
+    let tempdir = TempDir::new().unwrap();
+    let chain_dir = PathBuf::from(tempdir.path());
+    let provider = TestSemanticProvider::new("local-test", "v1");
+    // Cross two compaction boundaries and then append once more so the WAL that
+    // remains on disk must chain from the second compacted snapshot digest.
+    let thought_count = 2 * VECTOR_SIDECAR_WAL_COMPACT_THRESHOLD + 1;
+
+    {
+        let mut chain = MentisDb::open_with_key(&chain_dir, "wal-compact-reopen").unwrap();
+        chain.manage_vector_sidecar(provider.clone()).unwrap();
+        for index in 0..thought_count {
+            chain
+                .append(
+                    "agent",
+                    ThoughtType::Idea,
+                    &format!("invoice reconciliation record {index}"),
+                )
+                .unwrap();
+        }
+    }
+
+    let mut chain = MentisDb::open_with_key(&chain_dir, "wal-compact-reopen").unwrap();
+    let sidecar = chain
+        .manage_vector_sidecar(provider.clone())
+        .expect("reopening after a compaction boundary must rebuild, not fail");
+    assert_eq!(sidecar.entries.len(), thought_count);
+
+    let result = chain
+        .query_vector(
+            &provider,
+            &VectorSearchQuery::new("invoice payment").with_limit(5),
+        )
+        .unwrap();
+    assert!(!result.hits.is_empty());
+}
+
 #[test]
 #[cfg(feature = "local-embeddings")]
 #[ignore = "slow: builds a 50k HNSW graph"]
