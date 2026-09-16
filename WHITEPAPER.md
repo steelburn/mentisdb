@@ -1,7 +1,7 @@
 # MentisDB: Durable Semantic Memory for Software Agents
 
 **Author:** Angel Leon
-**Version:** 0.10.7.52
+**Version:** 0.10.8.53
 **Date:** 2026-08-16
 
 ---
@@ -826,6 +826,15 @@ Vector state lives in rebuildable per-chain sidecars, partitioned by chain key, 
 dimension, and version. Model or version changes invalidate old sidecars rather than
 silently mixing incompatible embeddings. Managed sidecars stay synchronized on append;
 the daemon defaults to local ONNX inference via `fastembed-minilm`.
+
+Incremental appends write one integrity-chained WAL record (`*.json.wal`, magic
+`MDBVWAL1`) beside the JSON snapshot. The WAL chain head must always match the
+representation on disk: while a WAL is pending the head is the last record's incremental
+digest, and after a compaction it is the full-corpus digest stored in the snapshot. The
+in-memory sidecar adopts the compacted digest before any further append, and a full
+snapshot write clears the sibling WAL before the atomic rename. Both invariants are what
+keep the sidecar a rebuildable derived artifact rather than a second source of truth: an
+unreadable sidecar is rebuilt from the canonical thought log and never blocks a chain.
 
 At chain open, the sidecar is deserialized once into an in-memory index. All subsequent
 ranked-search calls read from memory without touching disk.
