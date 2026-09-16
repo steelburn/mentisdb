@@ -1,6 +1,12 @@
 # MentisDB Roadmap
 
-## Shipped (0.8.2 -> 0.10.7.52)
+## Shipped (0.8.2 -> 0.10.8.53)
+
+### 0.10.8.53 - Technical Debt: Sidecar WAL Self-Consistency, CLI Thought Types
+- **Vector sidecar WAL brick (issue #20)** — compaction wrote the full-corpus snapshot digest but never rebased the live in-memory WAL head, so the first append past the 32-record threshold made the next chain open fail with `vector sidecar WAL digest chain mismatch`. Because the chain could not be opened, every write and most reads failed until `.wal` was deleted by hand. Compaction now rebases the WAL head, the managed append path rebases at schedule time, and a full snapshot clears any sibling `.wal` before the atomic rename. Unreadable sidecars rebuild from the canonical log instead of aborting the open.
+- **CLI `mentisdb add` `thought_type` (issue #17)** — the required `thought_type` was omitted when `--type` was absent, so a plain `mentisdb add "text"` failed with HTTP 422 `missing field thought_type`; `--type note` produced an opaque 400. `add` now defaults to `fact-learned` as documented and validates `--type` locally, listing the valid types. Payload builders extracted and covered by tests.
+- **One canonical `ThoughtType` parser** — removed three drifting copies in `server.rs`, `llm.rs`, and `lib.rs`; REST/MCP now accept the previously rejected `Goal` and `LLMExtracted` variants.
+- **Fully addressed open issues #17 and #20**; #18 required no code change (standalone `--headless` was fixed in 0.10.1.46).
 
 ### 0.10.7.52 - Hotfix: Load 0.10.5 skill registries
 - **Skill registry boot crash** — 0.10.6 inserted `SkillVersion.schema_version` in the middle of the bincode record. Existing `mentisdb-skills.bin` files failed to deserialize (`integer N, expected variant index 0 <= i < 2`) and `MentisDbService::new` panicked. 0.10.7 decodes the 0.10.5 V2 layout and rewrites the file on open/migrate.
