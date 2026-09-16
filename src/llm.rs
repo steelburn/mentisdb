@@ -209,42 +209,14 @@ fn validate_and_transform_thoughts(
     Ok(thoughts)
 }
 
-/// Parse a ThoughtType from its string name.
+/// Parse a [`ThoughtType`] from its string name.
+///
+/// Delegates to [`ThoughtType::from_str`], which is case-insensitive and
+/// ignores separators, so `"Decision"`, `"decision"`, and `" fact-learned "`
+/// all resolve.
 fn parse_thought_type(name: &str) -> Result<ThoughtType, String> {
-    match name.trim() {
-        "PreferenceUpdate" => Ok(ThoughtType::PreferenceUpdate),
-        "UserTrait" => Ok(ThoughtType::UserTrait),
-        "RelationshipUpdate" => Ok(ThoughtType::RelationshipUpdate),
-        "Finding" => Ok(ThoughtType::Finding),
-        "Insight" => Ok(ThoughtType::Insight),
-        "FactLearned" => Ok(ThoughtType::FactLearned),
-        "PatternDetected" => Ok(ThoughtType::PatternDetected),
-        "Hypothesis" => Ok(ThoughtType::Hypothesis),
-        "Mistake" => Ok(ThoughtType::Mistake),
-        "Correction" => Ok(ThoughtType::Correction),
-        "LessonLearned" => Ok(ThoughtType::LessonLearned),
-        "AssumptionInvalidated" => Ok(ThoughtType::AssumptionInvalidated),
-        "Constraint" => Ok(ThoughtType::Constraint),
-        "Plan" => Ok(ThoughtType::Plan),
-        "Subgoal" => Ok(ThoughtType::Subgoal),
-        "Decision" => Ok(ThoughtType::Decision),
-        "StrategyShift" => Ok(ThoughtType::StrategyShift),
-        "Wonder" => Ok(ThoughtType::Wonder),
-        "Question" => Ok(ThoughtType::Question),
-        "Idea" => Ok(ThoughtType::Idea),
-        "Experiment" => Ok(ThoughtType::Experiment),
-        "ActionTaken" => Ok(ThoughtType::ActionTaken),
-        "TaskComplete" => Ok(ThoughtType::TaskComplete),
-        "Checkpoint" => Ok(ThoughtType::Checkpoint),
-        "StateSnapshot" => Ok(ThoughtType::StateSnapshot),
-        "Handoff" => Ok(ThoughtType::Handoff),
-        "Summary" => Ok(ThoughtType::Summary),
-        "Surprise" => Ok(ThoughtType::Surprise),
-        "Reframe" => Ok(ThoughtType::Reframe),
-        "Goal" => Ok(ThoughtType::Goal),
-        "LLMExtracted" => Ok(ThoughtType::LLMExtracted),
-        other => Err(format!("Unknown ThoughtType '{}'", other)),
-    }
+    name.parse::<ThoughtType>()
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

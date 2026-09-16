@@ -8380,40 +8380,7 @@ fn query_is_empty(query: &ThoughtQuery) -> bool {
 }
 
 fn parse_thought_type(input: &str) -> Result<ThoughtType, Box<dyn Error + Send + Sync>> {
-    let thought_type = match normalize_label(input).as_str() {
-        "preferenceupdate" => ThoughtType::PreferenceUpdate,
-        "usertrait" => ThoughtType::UserTrait,
-        "relationshipupdate" => ThoughtType::RelationshipUpdate,
-        "finding" => ThoughtType::Finding,
-        "insight" => ThoughtType::Insight,
-        "factlearned" => ThoughtType::FactLearned,
-        "patterndetected" => ThoughtType::PatternDetected,
-        "hypothesis" => ThoughtType::Hypothesis,
-        "mistake" => ThoughtType::Mistake,
-        "correction" => ThoughtType::Correction,
-        "lessonlearned" => ThoughtType::LessonLearned,
-        "assumptioninvalidated" => ThoughtType::AssumptionInvalidated,
-        "constraint" => ThoughtType::Constraint,
-        "plan" => ThoughtType::Plan,
-        "subgoal" => ThoughtType::Subgoal,
-        "decision" => ThoughtType::Decision,
-        "strategyshift" => ThoughtType::StrategyShift,
-        "wonder" => ThoughtType::Wonder,
-        "question" => ThoughtType::Question,
-        "idea" => ThoughtType::Idea,
-        "experiment" => ThoughtType::Experiment,
-        "actiontaken" => ThoughtType::ActionTaken,
-        "taskcomplete" => ThoughtType::TaskComplete,
-        "checkpoint" => ThoughtType::Checkpoint,
-        "statesnapshot" => ThoughtType::StateSnapshot,
-        "handoff" => ThoughtType::Handoff,
-        "summary" => ThoughtType::Summary,
-        "reframe" => ThoughtType::Reframe,
-        "surprise" => ThoughtType::Surprise,
-        _ => return Err(format!("Unknown ThoughtType '{input}'").into()),
-    };
-
-    Ok(thought_type)
+    Ok(input.parse()?)
 }
 
 fn parse_thought_role(input: &str) -> Result<ThoughtRole, Box<dyn Error + Send + Sync>> {

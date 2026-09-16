@@ -10481,48 +10481,6 @@ struct MarkdownThoughtLine {
     tags: Vec<String>,
 }
 
-/// Parse a [`ThoughtType`] from its `{:?}` (Debug) PascalCase representation,
-/// accepting any mix of case and ignoring non-alphanumeric characters.
-fn parse_thought_type_from_debug(input: &str) -> Option<ThoughtType> {
-    let normalized: String = input
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_lowercase();
-    match normalized.as_str() {
-        "preferenceupdate" => Some(ThoughtType::PreferenceUpdate),
-        "usertrait" => Some(ThoughtType::UserTrait),
-        "relationshipupdate" => Some(ThoughtType::RelationshipUpdate),
-        "finding" => Some(ThoughtType::Finding),
-        "insight" => Some(ThoughtType::Insight),
-        "factlearned" => Some(ThoughtType::FactLearned),
-        "patterndetected" => Some(ThoughtType::PatternDetected),
-        "hypothesis" => Some(ThoughtType::Hypothesis),
-        "mistake" => Some(ThoughtType::Mistake),
-        "correction" => Some(ThoughtType::Correction),
-        "lessonlearned" => Some(ThoughtType::LessonLearned),
-        "assumptioninvalidated" => Some(ThoughtType::AssumptionInvalidated),
-        "constraint" => Some(ThoughtType::Constraint),
-        "plan" => Some(ThoughtType::Plan),
-        "subgoal" => Some(ThoughtType::Subgoal),
-        "decision" => Some(ThoughtType::Decision),
-        "strategyshift" => Some(ThoughtType::StrategyShift),
-        "wonder" => Some(ThoughtType::Wonder),
-        "question" => Some(ThoughtType::Question),
-        "idea" => Some(ThoughtType::Idea),
-        "experiment" => Some(ThoughtType::Experiment),
-        "actiontaken" => Some(ThoughtType::ActionTaken),
-        "taskcomplete" => Some(ThoughtType::TaskComplete),
-        "checkpoint" => Some(ThoughtType::Checkpoint),
-        "statesnapshot" => Some(ThoughtType::StateSnapshot),
-        "handoff" => Some(ThoughtType::Handoff),
-        "summary" => Some(ThoughtType::Summary),
-        "reframe" => Some(ThoughtType::Reframe),
-        "surprise" => Some(ThoughtType::Surprise),
-        _ => None,
-    }
-}
-
 /// Parse a [`ThoughtRole`] from its `{:?}` (Debug) PascalCase representation.
 fn parse_thought_role_from_debug(input: &str) -> Option<ThoughtRole> {
     let normalized: String = input
@@ -10621,7 +10579,7 @@ fn parse_memory_markdown_line(line: &str) -> Option<MarkdownThoughtLine> {
     let type_name = &after_bracket[..colon_pos];
     let content_and_meta = &after_bracket[colon_pos + 2..];
 
-    let thought_type = parse_thought_type_from_debug(type_name)?;
+    let thought_type = type_name.parse::<ThoughtType>().ok()?;
 
     // Split content from metadata block.
     let (content, agent_id, role, importance, confidence, tags) =
