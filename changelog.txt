@@ -1,3 +1,40 @@
+0.10.8.53 SEP/16/2026
+  - fix(sidecar): keep the vector sidecar WAL chain head consistent with the
+    on-disk snapshot, fixing a deterministic chain brick (GitHub issue #20).
+    Compaction rewrote the snapshot with the full-corpus digest but never
+    rebased the live in-memory sidecar, so the first append past the
+    32-record WAL threshold wrote a record whose `prev_digest` no longer
+    matched the snapshot. The next chain open then failed with "vector
+    sidecar WAL digest chain mismatch", and every daemon request on that
+    chain failed because the chain could not be opened. `compact_to_path`
+    now rebases the WAL head, the managed append path rebases when it
+    schedules a compaction, and a full snapshot write clears any sibling
+    `.wal` before the atomic rename. An unreadable sidecar now degrades to
+    a rebuild on open (the documented rebuildable-derived-state contract)
+    instead of aborting the chain. Regression tests: append-after-compact
+    replay, full snapshot clears stale WAL, reopen across two compaction
+    boundaries, and a foreign-generation WAL triggering rebuild.
+  - fix(cli): `mentisdb add` always sends the required `thought_type`,
+    defaulting to `fact-learned` as documented, and validates an explicit
+    `--type` locally with the list of valid types (GitHub issue #17).
+    Previously the field was omitted when `--type` was absent, so a plain
+    `mentisdb add "text"` failed with HTTP 422 `missing field thought_type`,
+    and a typo such as `--type note` produced an opaque server 400. Extracts
+    pure `build_add_body` / `build_ranked_search_body` helpers covered by
+    payload regression tests.
+  - refactor(thought-type): one canonical `ThoughtType` string mapping.
+    Replaced three hand-maintained copies in `server.rs`, `llm.rs`, and
+    `lib.rs` with `FromStr`/`Display`/`as_str`/`ALL` and a typed
+    `ParseThoughtTypeError` that lists the valid types. Fixes a latent bug
+    where the REST/MCP layer rejected the valid `Goal` and `LLMExtracted`
+    variants. Parsing is case- and separator-insensitive.
+  - test(sidecar/cli/thought-type): new `search_sidecar_tests`,
+    `search_vector_sidecar_integration_tests`, `cli_payload_tests`, and
+    `thought_type_tests` coverage; doctest for `ThoughtType::as_str`.
+  - Phase 2 gates green (fmt, clippy --all-targets --all-features -D
+    warnings, full test suite). Full LoCoMo/LongMemEval not re-run: technical
+    debt release, no retrieval-scoring change.
+
 0.10.7.52 AUG/16/2026
   - fix(skills): open 0.10.5 `mentisdb-skills.bin` files after 0.10.6 inserted
     `SkillVersion.schema_version` before `content`. Bincode treated the Full
